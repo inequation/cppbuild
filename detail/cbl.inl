@@ -500,7 +500,7 @@ namespace cbl
 			do
 			{
 				// Clogged pipes may stop the process from completing. Keep polling until handle at index 0 (i.e. the process) completes.
-				result = WaitForMultipleObjects(handle_count, handles, FALSE, INFINITY);
+				result = WaitForMultipleObjects(handle_count, handles, FALSE, INFINITE);
 				read_pipe_to_callback(err, buffer, on_err);
 				read_pipe_to_callback(out, buffer, on_out);
 			} while (result != WAIT_OBJECT_0 && result != WAIT_FAILED);
@@ -590,8 +590,7 @@ namespace cbl
 #if defined(_WIN32)
 			if (HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid))
 			{
-				assert(!"FIXME!!! This wait returns immediately. :(");
-				WaitForSingleObject(h, INFINITY);
+				WaitForSingleObject(h, INFINITE);
 			}
 #else
 	#error Unsupported platform
