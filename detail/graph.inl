@@ -13,7 +13,7 @@ namespace graph
 		root->outputs.push_back(target.first);
 		for (auto& tu : sources)
 		{
-			auto action = tc->generate_compile_action_for_cpptu(tu, cfg);
+			auto action = tc->generate_compile_action_for_cpptu(target, tu, cfg);
 			root->inputs.emplace_back(action);
 		}
 		return std::static_pointer_cast<action, cpp_action>(root);
@@ -135,7 +135,7 @@ namespace graph
 				auto i = root->inputs[0];
 				assert(i->outputs.size() == 1);
 				assert(i->type == cpp_action::source);
-				int exit_code = tc->invoke_compiler(root->outputs[0], i->outputs[0], cfg, on_stderr, on_stdout)->wait();
+				int exit_code = tc->invoke_compiler(target, root->outputs[0], i->outputs[0], cfg, on_stderr, on_stdout)->wait();
 				if (exit_code != 0)
 				{
 					return exit_code;
@@ -165,7 +165,7 @@ namespace graph
 		output_timestamps.reserve(outputs.size());
 		for (auto& o : outputs)
 		{
-			output_timestamps.push_back(cbl::get_modification_timestamp(o.c_str()));
+			output_timestamps.push_back(cbl::fs::get_modification_timestamp(o.c_str()));
 		}
 	}
 

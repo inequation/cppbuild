@@ -58,14 +58,15 @@ struct msvc : public toolchain
 	}
 
 	std::shared_ptr<cbl::process> invoke_compiler(
+		const target& target,
 		const std::string& object,
 		const std::string& source,
 		const configuration& cfg,
 		const cbl::pipe_output_callback& on_stderr,
 		const cbl::pipe_output_callback& on_stdout) override
 	{
-		std::string cmdline = generate_cl_commandline_shared(source, cfg, false);
-		cmdline += " /c /Fo" + object;
+		std::string cmdline = generate_cl_commandline_shared(target, cfg, false);
+		cmdline += " /c /Fo" + object + " " + source;
 		return cbl::process::start_async(cmdline.c_str(), on_stderr, on_stdout, nullptr, environment_block.empty() ? nullptr : environment_block.data());
 	}
 
@@ -81,9 +82,10 @@ struct msvc : public toolchain
 		case target_data::executable:
 		case target_data::dynamic_library:
 			{
-				std::string cmdline = generate_cl_commandline_shared(cbl::join(source_paths, " "), cfg, true);
+				std::string cmdline = generate_cl_commandline_shared(target, cfg, true);
 				cmdline += target.second.type == target_data::executable ? " /Fe" : " /link /out:";
 				cmdline += target.first;
+				cmdline += " " + cbl::join(source_paths, " ");
 				return cbl::process::start_async(cmdline.c_str(), on_stderr, on_stdout, nullptr, environment_block.empty() ? nullptr : environment_block.data());
 			}
 		default:
@@ -93,15 +95,17 @@ struct msvc : public toolchain
 		}
 	}
 
-	void generate_dependency_actions_for_cpptu(const std::string& source, const configuration& cfg, std::vector<std::shared_ptr<graph::action>>& inputs)
+	void generate_dependency_actions_for_cpptu(const target& target, const std::string& source, const configuration& cfg, std::vector<std::shared_ptr<graph::action>>& inputs)
 	{
-		std::string cmdline = generate_cl_commandline_shared(source, cfg, false) + " /c /showIncludes";
+		std::string cmdline = generate_cl_commandline_shared(target, cfg, false) + " /c /showIncludes";
 		std::vector<uint8_t> buffer;
 		auto append_to_buffer = [&buffer](const void *data, size_t byte_count)
 		{
 			buffer.insert(buffer.end(), (uint8_t*)data, (uint8_t*)data + byte_count);
 		};
+		cmdline += " " + source;
 		// Documentation says "The /showIncludes option emits to stderr, not stdout", but that seems to be a lie.
+		// TODO: Cache!!! This doesn't need to run every single invocation!
 		auto p = cbl::process::start_async(cmdline.c_str(), append_to_buffer, append_to_buffer, nullptr, environment_block.empty() ? nullptr : environment_block.data());
 		if (p && 0 == p->wait())
 		{
@@ -133,12 +137,12 @@ struct msvc : public toolchain
 		}
 	}
 
-	std::shared_ptr<graph::action> generate_compile_action_for_cpptu(const std::string& tu_path, const configuration& cfg) override
+	std::shared_ptr<graph::action> generate_compile_action_for_cpptu(const target& target, const std::string& tu_path, const configuration& cfg) override
 	{
 		auto source = std::make_shared<graph::cpp_action>();
 		source->type = (graph::action::action_type)graph::cpp_action::source;
 		source->outputs.push_back(tu_path);
-		generate_dependency_actions_for_cpptu(tu_path, cfg, source->inputs);
+		generate_dependency_actions_for_cpptu(target, tu_path, cfg, source->inputs);
 
 		auto action = std::make_shared<graph::cpp_action>();
 		action->type = (graph::action::action_type)graph::cpp_action::compile;
@@ -153,7 +157,7 @@ struct msvc : public toolchain
 private:
 	std::vector<uint8_t> environment_block;
 
-	std::string generate_cl_commandline_shared(const std::string& input, const configuration& cfg, const bool for_linking)
+	std::string generate_cl_commandline_shared(const target& target, const configuration& cfg, const bool for_linking)
 	{
 		std::string cmdline = "cl.exe /nologo";
 		if (cfg.emit_debug_information)
@@ -184,6 +188,19 @@ private:
 				cmdline += " /I" + include_dir;
 			}
 		}
+		if (target.second.type == target_data::executable)
+		{
+			cmdline += " /MT";
+		}
+		else
+		{
+			cmdline += " /MD";
+		}
+		// FIXME: This is the wrong condition. Get proper CRT library selection logic.
+		if (cfg.emit_debug_information)
+		{
+			cmdline += 'd';
+		}
 		auto additional_opts = cfg.additional_toolchain_options.find(key);
 		if (additional_opts != cfg.additional_toolchain_options.end())
 		{
@@ -192,7 +209,6 @@ private:
 				cmdline += opt;
 			}
 		}
-		cmdline += " " + input;
 		return cmdline;
 	}
 };

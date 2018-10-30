@@ -6,6 +6,7 @@
 void dump_builds(const target_map& t, const configuration_map& c)
 {
 	constexpr const char *types[] = { "Executable", "Static library", "Dynamic library" };
+	static_assert(sizeof(types) / sizeof(types[0]) - 1 == target_data::dynamic_library, "Missing string for target type");
 
 	printf("Targets:\n");
 	for (auto target : t)
@@ -20,6 +21,55 @@ void dump_builds(const target_map& t, const configuration_map& c)
 			printf("\t\t%s\n", source.c_str());
 		}
 		printf("\t}\n");
+	}
+
+	constexpr const char *platforms[] = { "Windows 64-bit", "Linux 64-bit", "macOS", "PS4", "Xbox One" };
+	constexpr const char *booleans[] = { "false", "true" };
+	static_assert(sizeof(platforms) / sizeof(platforms[0]) - 1 == (size_t)platform::xbox1, "Missing string for platform");
+
+	printf("Available configurations:\n");
+	for (auto cfg : c)
+	{
+		printf("\t%s:\t\n"
+			"\t{\n",
+			cfg.first.c_str());
+		printf("\t\tPlatform: %s\n"
+			"\t\tEmit debug information: %s\n"
+			"\t\tOptimization level: O%s\n"
+			"\t\tDefinitions:\n"
+			"\t\t{\n",
+			platforms[(int)cfg.second.platform],
+			booleans[cfg.second.emit_debug_information],
+			cfg.second.optimize == configuration::Os ? "s" : std::to_string((int)cfg.second.optimize).c_str());
+		for (auto& d : cfg.second.definitions)
+		{
+			printf("\t\t\t%s%s%s\n",
+				d.first.c_str(),
+				d.second.empty() ? "" : "=",
+				d.second.empty() ? "" : d.second.c_str());
+		}
+		printf("\t\t}\n"
+			"\t\tAdditional include directories:\n"
+			"\t\t{\n");
+		for (auto& i : cfg.second.additional_include_directories)
+		{
+			printf("\t\t\t%s\n", i.c_str());
+		}
+		printf("\t\t}\n"
+			"\t\tAdditional toolchain options:\n"
+			"\t\t{\n");
+		for (auto& t : cfg.second.additional_toolchain_options)
+		{
+			printf("\t\t\t\"%s\" =\n"
+				"\t\t\t{",
+				t.first.c_str());
+			for (auto& o : t.second)
+			{
+				printf("\t\t\t\t\"%s\"\n", o.c_str());
+			}
+		}
+		printf("\t\t}\n"
+			"\t}\n");
 	}
 }
 
@@ -140,8 +190,7 @@ namespace detail
 		target.sources = fvwrap("cppbuild.cpp");
 
 		configuration cfg;
-		cfg = base_configurations::release();
-		cfg.emit_debug_information = true;	// Release, but with debug info.
+		cfg = base_configurations::debug(cbl::get_host_platform());
 		cfg.additional_include_directories.push_back("cppbuild");
 		cfg.definitions.push_back(std::make_pair("CPPBUILD_SELF_HOSTED", "1"));
 
@@ -150,7 +199,7 @@ namespace detail
 
 		std::string new_cppbuild = path::join(cache_dir, "cppbuild-");
 		new_cppbuild += std::to_string(process::get_current_pid());
-#ifdef _WIN32
+#if defined(_WIN64)
 		new_cppbuild += ".exe";
 #endif
 
@@ -160,7 +209,7 @@ namespace detail
 		);
 	}
 
-	void bootstrap(toolchain_map& toolchains)
+	void bootstrap(toolchain_map& toolchains, int argc, char *argv[])
 	{
 		auto bootstrap = describe_bootstrap_target(toolchains);
 
@@ -174,9 +223,15 @@ namespace detail
 			if (0 == execute_build(bootstrap.first, build.first, bootstrap.second, build.second))
 			{
 				std::string cmdline = bootstrap.first.first;
-				cmdline += " bootstrap_deploy "
+				cmdline += " _bootstrap_deploy "
 					+ std::to_string(cbl::process::get_current_pid()) + " "
 					+ cbl::process::get_current_executable_path();
+				// Pass in any 
+				for (int i = 1; i < argc; ++i)
+				{
+					cmdline += ' ';
+					cmdline += argv[i];
+				}
 				auto p = cbl::process::start_async(cmdline.c_str());
 				if (!p)
 				{
@@ -197,12 +252,43 @@ namespace detail
 
 int main(int argc, char *argv[])
 {
-	if (argc == 4 && 0 == strcmp(argv[1], "bootstrap_deploy"))
+	if (argc >= 4 && 0 == strcmp(argv[1], "_bootstrap_deploy"))
 	{
-		// Finish the bootstrap deployment.
+		// Finish the bootstrap deployment: 
 		uint32_t parent_pid = atoi(argv[2]);
-		cbl::process::wait_by_pid(parent_pid);
-		return cbl::copy_file(cbl::process::get_current_executable_path().c_str(), argv[3], cbl::maintain_timestamps) ? 0 : 1;
+		cbl::process::wait_for_pid(parent_pid);
+		if (cbl::fs::copy_file(
+			cbl::process::get_current_executable_path().c_str(),
+			argv[3],
+			cbl::fs::maintain_timestamps | cbl::fs::overwrite))
+		{
+			printf("Successful bootstrap deployment\n");
+			if (argc >= 3)
+			{
+				std::string cmdline;
+				for (int i = 3; i < argc; ++i)
+				{
+					cmdline += ' ';
+					cmdline += argv[i];
+				}
+				auto p = cbl::process::start_async(cmdline.c_str());
+				if (p)
+				{
+					p->detach();
+					return 0;
+				}
+				else
+				{
+					return 1;
+				}
+			}
+			return 0;
+		}
+		else
+		{
+			fprintf(stderr, "Failed to overwrite the cppbuild executable\n");
+			return 1;
+		}
 	}
 
 	target_map targets;
@@ -211,7 +297,7 @@ int main(int argc, char *argv[])
 	discover_toolchains(toolchains);
 
 	// If we were in need of bootstrapping, this call will terminate the process.
-	detail::bootstrap(toolchains);
+	detail::bootstrap(toolchains, argc, argv);
 
 	describe(targets, configs, toolchains);
 	dump_builds(targets, configs);

@@ -7,7 +7,7 @@
 enum class platform
 {
 	win64,
-	linux,
+	linux64,
 	macos,
 	ps4,
 	xbox1,
@@ -66,6 +66,7 @@ struct toolchain
 {
 	virtual void initialize(const configuration&) = 0;
 	virtual std::shared_ptr<cbl::process> invoke_compiler(
+		const target& target,
 		const std::string& object_path,
 		const std::string& source_path,
 		const configuration&,
@@ -77,7 +78,11 @@ struct toolchain
 		const configuration&,
 		const cbl::pipe_output_callback& on_stderr,
 		const cbl::pipe_output_callback& on_stdout) = 0;
-	virtual std::shared_ptr<graph::action> generate_compile_action_for_cpptu(const std::string& path, const configuration&) { return nullptr; };
+	virtual std::shared_ptr<graph::action> generate_compile_action_for_cpptu(
+		const target& target,
+		const std::string& path,
+		const configuration&)
+	{ return nullptr; };
 };
 
 int build_target(target&, configuration&);
