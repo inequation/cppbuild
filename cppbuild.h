@@ -49,12 +49,14 @@ struct target_data
 	} type;
 
 	const char *used_toolchain = nullptr;
+	std::string output;
 	std::function<string_vector()> sources;
 
 	target_data() = default;
 
-	target_data(target_type in_type, std::function<string_vector()> in_sources, const char *in_toolchain = nullptr)
+	target_data(target_type in_type, const char *in_output, std::function<string_vector()> in_sources, const char *in_toolchain = nullptr)
 		: type(in_type)
+		, output(in_output)
 		, used_toolchain(in_toolchain)
 		, sources(in_sources)
 	{}
@@ -144,7 +146,7 @@ void discover_toolchains(toolchain_map& toolchains);
 //=============================================================================
 
 // User implementables
-void describe(target_map& targets, configuration_map& configs, toolchain_map& toolchains);
+std::pair<std::string, std::string> describe(target_map& targets, configuration_map& configs, toolchain_map& toolchains);
 
 //=============================================================================
 

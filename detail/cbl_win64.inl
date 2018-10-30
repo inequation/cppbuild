@@ -151,12 +151,17 @@ namespace cbl
 						FILETIME stamps[3];
 						if (GetFileTime(ef, stamps + 0, stamps + 1, stamps + 2))
 						{
-							HANDLE nf = CreateFileA(existing_path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+							HANDLE nf = CreateFileA(new_path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
 							if (nf != INVALID_HANDLE_VALUE)
 							{
-								SetFileTime(nf, stamps + 0, stamps + 1, stamps + 2);
+								if (!SetFileTime(nf, stamps + 0, stamps + 1, stamps + 2))
+								{
+									printf("Failed to set file access time on %s, "
+										"the file might be erroneously treated as up-to-date\n",
+										new_path);
+								}
+								CloseHandle(nf);
 							}
-							CloseHandle(nf);
 						}
 						CloseHandle(ef);
 					}
@@ -164,6 +169,11 @@ namespace cbl
 				return true;
 			}
 			return false;
+		}
+
+		bool delete_file(const char *path)
+		{
+			return DeleteFileA(path);
 		}
 	}
 
@@ -227,9 +237,9 @@ namespace cbl
 		PROCESS_INFORMATION proc_info = { 0 };
 		STARTUPINFO start_info = { 0 };
 		start_info.cb = sizeof(start_info);
-		start_info.hStdError = err[pipe_write] != INVALID_HANDLE_VALUE ? err[pipe_write] : 0;
-		start_info.hStdOutput = out[pipe_write] != INVALID_HANDLE_VALUE ? out[pipe_write] : 0;
-		start_info.hStdInput = in[pipe_read] != INVALID_HANDLE_VALUE ? in[pipe_write] : 0;
+		start_info.hStdError = err[pipe_write] != INVALID_HANDLE_VALUE ? err[pipe_write] : GetStdHandle(STD_ERROR_HANDLE);
+		start_info.hStdOutput = out[pipe_write] != INVALID_HANDLE_VALUE ? out[pipe_write] : GetStdHandle(STD_OUTPUT_HANDLE);
+		start_info.hStdInput = in[pipe_read] != INVALID_HANDLE_VALUE ? in[pipe_write] : GetStdHandle(STD_INPUT_HANDLE);
 		start_info.dwFlags |= STARTF_USESTDHANDLES;
 
 		char cwd[260];
@@ -292,7 +302,7 @@ namespace cbl
 		size_t handle_count = 1;
 		HANDLE handles[1 + 2];
 		handles[0] = handle;
-		auto collect_pipe = [&](HANDLE pipe[2]) { if (out[pipe_read]) { handles[handle_count++] = out[pipe_read]; } };
+		auto collect_pipe = [&](HANDLE pipe[2]) { if (out[pipe_read] != INVALID_HANDLE_VALUE) { handles[handle_count++] = out[pipe_read]; } };
 		collect_pipe(out);
 		collect_pipe(err);
 

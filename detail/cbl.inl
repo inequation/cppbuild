@@ -99,6 +99,12 @@ namespace cbl
 				return a + b;
 			}
 		}
+
+		const char *get_cppbuild_cache_path()
+		{
+			static std::string cached = path::join("cppbuild", "cache");
+			return cached.c_str();
+		}
 	};
 
 	string_vector vwrap(const std::string& s)

@@ -14,6 +14,8 @@ namespace cbl
 		string_vector split(const char *path);
 		// Joins paths using the host platform-specific path separator.
 		std::string join(const std::string& a, const std::string& b);
+
+		const char *get_cppbuild_cache_path();
 	};
 
 	namespace fs
@@ -31,6 +33,7 @@ namespace cbl
 		};
 		copy_flags operator|(copy_flags a, copy_flags b) { return (copy_flags)((int)a | (int)b); }
 		bool copy_file(const char *existing_path, const char *new_path, copy_flags flags);
+		bool delete_file(const char *path);
 	};
 
 	// Factories for generating typical basic configurations.

@@ -149,6 +149,7 @@ std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_buil
 	{
 		used_tc = cbl::get_default_toolchain_for_host();
 	}
+	printf("Setting up build of using toolchain %s\n", used_tc);
 	assert(toolchains.find(used_tc) != toolchains.end() && "Unknown toolchain");
 	auto& tc = toolchains[used_tc];
 	tc->initialize(cfg);
@@ -160,6 +161,7 @@ std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_buil
 
 void cull_build(std::shared_ptr<graph::action>& root)
 {
+	printf("Culling build graph\n");
 	/*printf("Build graph before culling:\n");
 	dump_graph(std::static_pointer_cast<graph::cpp_action>(root));*/
 
@@ -170,11 +172,12 @@ void cull_build(std::shared_ptr<graph::action>& root)
 
 int execute_build(const target& target, std::shared_ptr<graph::action> root, const configuration& cfg, std::shared_ptr<toolchain> tc)
 {
+	printf("Executing build graph\n");
 	auto on_output = [](const void *data, size_t length)
 	{
 		printf("%.*s", (int)length, (const char *)data);
 	};
-	int exit_code = graph::execute_build_graph(target, root, cfg, tc, on_output, on_output);
+	int exit_code = graph::execute_build_graph(target, root, cfg, tc, /*on_output, on_output*/nullptr, nullptr);
 	printf("Build finished with code %d\n", exit_code);
 	return exit_code;
 }
@@ -185,7 +188,14 @@ namespace detail
 	{
 		using namespace cbl;
 
+		constexpr char cppbuild[] = "cppbuild"
+#if defined(_WIN64)
+			".exe"
+#endif
+			;
+
 		target_data target;
+		target.output = cppbuild;
 		target.type = target_data::executable;
 		target.sources = fvwrap("cppbuild.cpp");
 
@@ -193,40 +203,49 @@ namespace detail
 		cfg = base_configurations::debug(cbl::get_host_platform());
 		cfg.additional_include_directories.push_back("cppbuild");
 		cfg.definitions.push_back(std::make_pair("CPPBUILD_SELF_HOSTED", "1"));
-
-		std::string cache_dir = path::join("cppbuild", "cache");
-		mkdir(cache_dir.c_str(), true);
-
-		std::string new_cppbuild = path::join(cache_dir, "cppbuild-");
-		new_cppbuild += std::to_string(process::get_current_pid());
-#if defined(_WIN64)
-		new_cppbuild += ".exe";
-#endif
+		cfg.additional_toolchain_options["msvc link"] = cbl::vwrap("/link /SUBSYSTEM:CONSOLE");
 
 		return std::make_pair(
-			std::make_pair(new_cppbuild, target),
+			std::make_pair(cppbuild, target),
 			cfg
 		);
 	}
 
-	void bootstrap(toolchain_map& toolchains, int argc, char *argv[])
+	int bootstrap(toolchain_map& toolchains, int argc, const char *argv[])
 	{
+		using namespace cbl;
+
 		auto bootstrap = describe_bootstrap_target(toolchains);
 
 		auto build = setup_build(bootstrap.first, bootstrap.second, toolchains);
 #if CPPBUILD_SELF_HOSTED	// Only cull the build graph once we have successfully bootstrapped.
 		cull_build(build.first);
 #endif
+
+		std::string staging_dir = path::join(path::get_cppbuild_cache_path(), "bin");
 		if (build.first)
 		{
+			mkdir(staging_dir.c_str(), true);
+
+			// Now here comes the hack: we rename the output of the root node *only after the culling*.
+			// I.e. cull based on main cppbuild executable's timestamp, but output to a file named differently.
+			std::string new_cppbuild = path::join(staging_dir, "cppbuild-");
+			new_cppbuild += std::to_string(process::get_current_pid());
+#if defined(_WIN64)
+			new_cppbuild += ".exe";
+#endif
+			build.first->outputs[0] = new_cppbuild;
+			bootstrap.first.second.output = new_cppbuild;
+
 			printf("cppbuild executable is outdated, bootstrapping\n");
-			if (0 == execute_build(bootstrap.first, build.first, bootstrap.second, build.second))
+			int exit_code = execute_build(bootstrap.first, build.first, bootstrap.second, build.second);
+			if (exit_code == 0)
 			{
-				std::string cmdline = bootstrap.first.first;
+				std::string cmdline = bootstrap.first.second.output;
 				cmdline += " _bootstrap_deploy "
 					+ std::to_string(cbl::process::get_current_pid()) + " "
 					+ cbl::process::get_current_executable_path();
-				// Pass in any 
+				// Pass in any extra arguments we may have received.
 				for (int i = 1; i < argc; ++i)
 				{
 					cmdline += ' ';
@@ -235,17 +254,23 @@ namespace detail
 				auto p = cbl::process::start_async(cmdline.c_str());
 				if (!p)
 				{
-					printf("FATAL: Failed to bootstrap cppbuild\n");
+					fprintf(stderr, "FATAL: Failed to bootstrap cppbuild\n");
 					abort();
 				}
 				p->detach();
 				exit(0);
 			}
+			return exit_code;
 		}
 		else
 		{
 			printf("cppbuild executable up to date\n");
-			// TODO: Take the opportunity to delete old bootstrap executables.
+			auto old_copies = cbl::fs::enumerate_files(cbl::path::join(staging_dir, "cppbuild-*").c_str());
+			for (auto& o : old_copies)
+			{
+				cbl::fs::delete_file(o.c_str());
+			}
+			return 0;
 		}
 	}
 };
@@ -263,26 +288,22 @@ int main(int argc, char *argv[])
 			cbl::fs::maintain_timestamps | cbl::fs::overwrite))
 		{
 			printf("Successful bootstrap deployment\n");
-			if (argc >= 3)
+			std::string cmdline = argv[3];
+			for (int i = 4; i < argc; ++i)
 			{
-				std::string cmdline;
-				for (int i = 3; i < argc; ++i)
-				{
-					cmdline += ' ';
-					cmdline += argv[i];
-				}
-				auto p = cbl::process::start_async(cmdline.c_str());
-				if (p)
-				{
-					p->detach();
-					return 0;
-				}
-				else
-				{
-					return 1;
-				}
+				cmdline += ' ';
+				cmdline += argv[i];
 			}
-			return 0;
+			auto p = cbl::process::start_async(cmdline.c_str());
+			if (p)
+			{
+				p->detach();
+				return 0;
+			}
+			else
+			{
+				return 1;
+			}
 		}
 		else
 		{
@@ -297,12 +318,40 @@ int main(int argc, char *argv[])
 	discover_toolchains(toolchains);
 
 	// If we were in need of bootstrapping, this call will terminate the process.
-	detail::bootstrap(toolchains, argc, argv);
+	if (0 != detail::bootstrap(toolchains, argc, const_cast<const char**>(argv)))
+	{
+		fprintf(stderr, "FATAL: Failed to bootstrap cppbuild\n");
+		return 1;
+	}
 
-	describe(targets, configs, toolchains);
+	auto arguments = describe(targets, configs, toolchains);
 	dump_builds(targets, configs);
 
-	// TODO: Build the actual targets. :)
+	// Read target and configuration info from command line.
+	if (argc >= 2)
+	{
+		arguments.first = argv[1];
+	}
+	if (argc >= 3)
+	{
+		arguments.second = argv[2];
+	}
 
-	return 0;
+	auto target = targets.find(arguments.first);
+	if (target == targets.end())
+	{
+		fprintf(stderr, "Unknown target %s\n", arguments.first.c_str());
+		return 1;
+	}
+	auto cfg = configs.find(arguments.second);
+	if (cfg == configs.end())
+	{
+		fprintf(stderr, "Unknown configuration %s\n", arguments.second.c_str());
+		return 2;
+	}
+
+	printf("Building target %s in configuration %s\n", target->first.c_str(), cfg->first.c_str());
+	auto build = setup_build(*target, cfg->second, toolchains);
+	cull_build(build.first);
+	return execute_build(*target, build.first, cfg->second, build.second);
 }

@@ -77,6 +77,14 @@ struct msvc : public toolchain
 		const cbl::pipe_output_callback& on_stderr,
 		const cbl::pipe_output_callback& on_stdout) override
 	{
+		const string_vector *addtn_opts = nullptr;
+		{
+			auto it = cfg.additional_toolchain_options.find("msvc link");
+			if (it != cfg.additional_toolchain_options.end())
+			{
+				addtn_opts = &it->second;
+			}
+		}
 		switch (target.second.type)
 		{
 		case target_data::executable:
@@ -84,8 +92,15 @@ struct msvc : public toolchain
 			{
 				std::string cmdline = generate_cl_commandline_shared(target, cfg, true);
 				cmdline += target.second.type == target_data::executable ? " /Fe" : " /link /out:";
-				cmdline += target.first;
-				cmdline += " " + cbl::join(source_paths, " ");
+				cmdline += target.second.output + " ";
+				cmdline += cbl::join(source_paths, " ");
+				if (addtn_opts)
+				{
+					for (auto& o : *addtn_opts)
+					{
+						cmdline += " " + o;
+					}
+				}
 				return cbl::process::start_async(cmdline.c_str(), on_stderr, on_stdout, nullptr, environment_block.empty() ? nullptr : environment_block.data());
 			}
 		default:

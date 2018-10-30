@@ -10,7 +10,7 @@ namespace graph
 		std::shared_ptr<cpp_action> root = std::make_shared<cpp_action>();
 		root->type = (action::action_type)cpp_action::link;
 		auto sources = target.second.sources();
-		root->outputs.push_back(target.first);
+		root->outputs.push_back(target.second.output);
 		for (auto& tu : sources)
 		{
 			auto action = tc->generate_compile_action_for_cpptu(target, tu, cfg);
@@ -29,28 +29,26 @@ namespace graph
 				assert(!"We ought to be culled by the parent");
 				return;
 			case cpp_action::source:
+				for (int i = action->inputs.size() - 1; i >= 0; --i)
 				{
-					auto before_begin = action->inputs.begin() - 1;
-					for (auto it = action->inputs.end() - 1; it != before_begin; --it)
+					auto& input = action->inputs[i];
+					switch (input->type)
 					{
-						switch ((*it)->type)
+					case cpp_action::include:
 						{
-						case cpp_action::include:
+							uint64_t include_timestamp = input->get_oldest_output_timestamp();
+							if (include_timestamp < root_timestamp)
 							{
-								uint64_t include_timestamp = (*it)->get_oldest_output_timestamp();
-								if (include_timestamp < root_timestamp)
-								{
-									action->inputs.erase(it);
-								}
+								action->inputs.erase(action->inputs.begin() + i);
 							}
-							break;
-						case cpp_action::source:
-							assert(!"Source actions may only have includes as input");
-							break;
-						default:
-							assert(!"Unimplmented");
-							abort();
 						}
+						break;
+					case cpp_action::source:
+						assert(!"Source actions may only have includes as input");
+						break;
+					default:
+						assert(!"Unimplmented");
+						abort();
 					}
 				}
 				if (action->inputs.empty())
@@ -60,15 +58,13 @@ namespace graph
 				break;
 			case cpp_action::compile:
 			case cpp_action::link:
+				for (int i = action->inputs.size() - 1; i >= 0; --i)
 				{
-					auto before_begin = action->inputs.begin() - 1;
-					for (auto it = action->inputs.end() - 1; it != before_begin; --it)
+					auto& input = action->inputs[i];
+					cull_action(input, root_timestamp);
+					if (!input)
 					{
-						cull_action(*it, root_timestamp);
-						if (!*it)
-						{
-							action->inputs.erase(it);
-						}
+						action->inputs.erase(action->inputs.begin() + i);
 					}
 				}
 				if (action->inputs.empty())
@@ -121,10 +117,17 @@ namespace graph
 					assert(i->type == cpp_action::compile);
 					inputs.insert(inputs.begin(), i->outputs.begin(), i->outputs.end());
 				}
-				int exit_code = tc->invoke_linker(target, inputs, cfg, on_stderr, on_stdout)->wait();
-				if (exit_code != 0)
+				if (auto p = tc->invoke_linker(target, inputs, cfg, on_stderr, on_stdout))
 				{
-					return exit_code;
+					int exit_code = p->wait();
+					if (exit_code != 0)
+					{
+						return exit_code;
+					}
+				}
+				else
+				{
+					return 1;
 				}
 			}
 			break;
@@ -135,10 +138,17 @@ namespace graph
 				auto i = root->inputs[0];
 				assert(i->outputs.size() == 1);
 				assert(i->type == cpp_action::source);
-				int exit_code = tc->invoke_compiler(target, root->outputs[0], i->outputs[0], cfg, on_stderr, on_stdout)->wait();
-				if (exit_code != 0)
+				if (auto p = tc->invoke_compiler(target, root->outputs[0], i->outputs[0], cfg, on_stderr, on_stdout))
 				{
-					return exit_code;
+					int exit_code = p->wait();
+					if (exit_code != 0)
+					{
+						return exit_code;
+					}
+				}
+				else
+				{
+					return 1;
 				}
 			}
 			break;
