@@ -169,6 +169,26 @@ namespace graph
 		return 0;
 	}
 
+	void clean_build_graph_outputs(std::shared_ptr<action> root)
+	{
+		if (!root)
+		{
+			// Empty graph, nothing to clean.
+			return;
+		}
+		if (root->type != cpp_action::include)
+		{
+			for (auto& o : root->outputs)
+			{
+				cbl::fs::delete_file(o.c_str());
+			}
+			for (auto& i : root->inputs)
+			{
+				clean_build_graph_outputs(i);
+			}
+		}
+	}
+
 	void action::update_output_timestamps()
 	{
 		output_timestamps.clear();

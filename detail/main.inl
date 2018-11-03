@@ -26,7 +26,7 @@ void dump_builds(const target_map& t, const configuration_map& c)
 	constexpr const char *platforms[] = { "Windows 64-bit", "Linux 64-bit", "macOS", "PS4", "Xbox One" };
 	constexpr const char *booleans[] = { "false", "true" };
 	static_assert(sizeof(platforms) / sizeof(platforms[0]) - 1 == (size_t)platform::xbox1, "Missing string for platform");
-
+	
 	printf("Available configurations:\n");
 	for (auto cfg : c)
 	{
@@ -142,16 +142,20 @@ void dump_graph(std::shared_ptr<graph::action> root)
 	detail::dump_action(root, 0);
 }
 
-std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_build(const target& target, const configuration& cfg, toolchain_map& toolchains)
+std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_build(const target& target, const configuration& cfg, toolchain_map& toolchains, std::shared_ptr<toolchain> *out_tc = nullptr)
 {
 	const char *used_tc = target.second.used_toolchain;
 	if (!used_tc)
 	{
 		used_tc = cbl::get_default_toolchain_for_host();
 	}
-	printf("Setting up build of using toolchain %s\n", used_tc);
+	std::string s = "Build setup using ";
+	s += used_tc;
+	cbl::time::scoped_timer _(s.c_str());
+
 	assert(toolchains.find(used_tc) != toolchains.end() && "Unknown toolchain");
 	auto& tc = toolchains[used_tc];
+
 	tc->initialize(cfg);
 	return std::make_pair(
 		graph::generate_cpp_build_graph(target, cfg, tc),
@@ -161,24 +165,21 @@ std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_buil
 
 void cull_build(std::shared_ptr<graph::action>& root)
 {
-	printf("Culling build graph\n");
-	/*printf("Build graph before culling:\n");
+	// TODO: Also compare toolchain invocations, as they may easily change the output.
+	cbl::time::scoped_timer _("Build graph culling");
+	/*cbl::log(cbl::severity::verbose, "Build graph before culling:");
 	dump_graph(std::static_pointer_cast<graph::cpp_action>(root));*/
 
 	graph::cull_build_graph(root);
-	printf("Build graph after culling:\n");
+	cbl::info("Build graph after culling:");
 	dump_graph(std::static_pointer_cast<graph::cpp_action>(root));
 }
 
 int execute_build(const target& target, std::shared_ptr<graph::action> root, const configuration& cfg, std::shared_ptr<toolchain> tc)
 {
-	printf("Executing build graph\n");
-	auto on_output = [](const void *data, size_t length)
-	{
-		printf("%.*s", (int)length, (const char *)data);
-	};
-	int exit_code = graph::execute_build_graph(target, root, cfg, tc, /*on_output, on_output*/nullptr, nullptr);
-	printf("Build finished with code %d\n", exit_code);
+	cbl::time::scoped_timer _("Build graph execution");
+	int exit_code = graph::execute_build_graph(target, root, cfg, tc, nullptr, nullptr);
+	cbl::info("Build finished with code %d", exit_code);
 	return exit_code;
 }
 
@@ -198,6 +199,7 @@ namespace detail
 		target.output = cppbuild;
 		target.type = target_data::executable;
 		target.sources = fvwrap("cppbuild.cpp");
+		target.used_toolchain = cbl::get_default_toolchain_for_host();
 
 		configuration cfg;
 		cfg = base_configurations::debug(cbl::get_host_platform());
@@ -211,7 +213,7 @@ namespace detail
 		);
 	}
 
-	int bootstrap(toolchain_map& toolchains, int argc, const char *argv[])
+	int bootstrap_build(toolchain_map& toolchains, int argc, const char *argv[])
 	{
 		using namespace cbl;
 
@@ -225,7 +227,7 @@ namespace detail
 		std::string staging_dir = path::join(path::get_cppbuild_cache_path(), "bin");
 		if (build.first)
 		{
-			mkdir(staging_dir.c_str(), true);
+			fs::mkdir(staging_dir.c_str(), true);
 
 			// Now here comes the hack: we rename the output of the root node *only after the culling*.
 			// I.e. cull based on main cppbuild executable's timestamp, but output to a file named differently.
@@ -237,14 +239,15 @@ namespace detail
 			build.first->outputs[0] = new_cppbuild;
 			bootstrap.first.second.output = new_cppbuild;
 
-			printf("cppbuild executable is outdated, bootstrapping\n");
+			time::scoped_timer _("Bootstrap outdated cppbuild executable");
 			int exit_code = execute_build(bootstrap.first, build.first, bootstrap.second, build.second);
 			if (exit_code == 0)
 			{
 				std::string cmdline = bootstrap.first.second.output;
 				cmdline += " _bootstrap_deploy "
 					+ std::to_string(cbl::process::get_current_pid()) + " "
-					+ cbl::process::get_current_executable_path();
+					+ cbl::process::get_current_executable_path() + " "
+					+ bootstrap.first.second.used_toolchain;
 				// Pass in any extra arguments we may have received.
 				for (int i = 1; i < argc; ++i)
 				{
@@ -254,7 +257,7 @@ namespace detail
 				auto p = cbl::process::start_async(cmdline.c_str());
 				if (!p)
 				{
-					fprintf(stderr, "FATAL: Failed to bootstrap cppbuild\n");
+					error("FATAL: Failed to bootstrap cppbuild");
 					abort();
 				}
 				p->detach();
@@ -264,7 +267,7 @@ namespace detail
 		}
 		else
 		{
-			printf("cppbuild executable up to date\n");
+			info("cppbuild executable up to date");
 			auto old_copies = cbl::fs::enumerate_files(cbl::path::join(staging_dir, "cppbuild-*").c_str());
 			for (auto& o : old_copies)
 			{
@@ -273,23 +276,25 @@ namespace detail
 			return 0;
 		}
 	}
-};
 
-int main(int argc, char *argv[])
-{
-	if (argc >= 4 && 0 == strcmp(argv[1], "_bootstrap_deploy"))
+	int boostrap_deploy(int argc, char *argv[], const toolchain_map& toolchains)
 	{
 		// Finish the bootstrap deployment: 
 		uint32_t parent_pid = atoi(argv[2]);
 		cbl::process::wait_for_pid(parent_pid);
-		if (cbl::fs::copy_file(
-			cbl::process::get_current_executable_path().c_str(),
-			argv[3],
-			cbl::fs::maintain_timestamps | cbl::fs::overwrite))
+		auto it = toolchains.find(argv[4]);
+		if (it == toolchains.end())
 		{
-			printf("Successful bootstrap deployment\n");
+			return (int)error_code::failed_bootstrap_bad_toolchain;
+		}
+		std::shared_ptr<toolchain> tc = it->second;
+		if (tc->deploy_executable_with_debug_symbols(
+			cbl::process::get_current_executable_path().c_str(),
+			argv[3]))
+		{
+			cbl::info("Successful bootstrap deployment");
 			std::string cmdline = argv[3];
-			for (int i = 4; i < argc; ++i)
+			for (int i = 5; i < argc; ++i)
 			{
 				cmdline += ' ';
 				cmdline += argv[i];
@@ -302,27 +307,52 @@ int main(int argc, char *argv[])
 			}
 			else
 			{
-				return 1;
+				cbl::error("Failed to respawn after deployment");
+				return (int)error_code::failed_bootstrap_respawn;
 			}
 		}
 		else
 		{
-			fprintf(stderr, "Failed to overwrite the cppbuild executable\n");
-			return 1;
+			cbl::error("Failed to overwrite the cppbuild executable");
+			return (int)error_code::failed_bootstrap_deployment;
 		}
+	}
+};
+
+void print_version()
+{
+	cbl::info("cppbuild version %d.%d.%d (%s generation, " __DATE__ ", " __TIME__ ")",
+		cppbuild_version.major,
+		cppbuild_version.minor,
+		cppbuild_version.patch,
+		cppbuild_version.self_hosted ? "2nd+" : "1st"
+	);
+}
+
+int main(int argc, char *argv[])
+{
+	toolchain_map toolchains;
+	discover_toolchains(toolchains);
+
+	if (argc >= 5 && 0 == strcmp(argv[1], "_bootstrap_deploy"))
+	{
+		return detail::boostrap_deploy(argc, argv, toolchains);
+	}
+
+	if (argc <= 1)
+	{
+		print_version();
+	}
+
+	// If we were in need of bootstrapping, this call will terminate the process.
+	if (0 != detail::bootstrap_build(toolchains, argc, const_cast<const char**>(argv)))
+	{
+		cbl::error("FATAL: Failed to bootstrap cppbuild");
+		return (int)error_code::failed_bootstrap_build;
 	}
 
 	target_map targets;
 	configuration_map configs;
-	toolchain_map toolchains;
-	discover_toolchains(toolchains);
-
-	// If we were in need of bootstrapping, this call will terminate the process.
-	if (0 != detail::bootstrap(toolchains, argc, const_cast<const char**>(argv)))
-	{
-		fprintf(stderr, "FATAL: Failed to bootstrap cppbuild\n");
-		return 1;
-	}
 
 	auto arguments = describe(targets, configs, toolchains);
 	dump_builds(targets, configs);
@@ -340,17 +370,17 @@ int main(int argc, char *argv[])
 	auto target = targets.find(arguments.first);
 	if (target == targets.end())
 	{
-		fprintf(stderr, "Unknown target %s\n", arguments.first.c_str());
-		return 1;
+		cbl::error("Unknown target %s", arguments.first.c_str());
+		return (int)error_code::unknown_target;
 	}
 	auto cfg = configs.find(arguments.second);
 	if (cfg == configs.end())
 	{
-		fprintf(stderr, "Unknown configuration %s\n", arguments.second.c_str());
-		return 2;
+		cbl::error("Unknown configuration %s", arguments.second.c_str());
+		return (int)error_code::unknown_configuration;
 	}
 
-	printf("Building target %s in configuration %s\n", target->first.c_str(), cfg->first.c_str());
+	cbl::info("Building target %s in configuration %s", target->first.c_str(), cfg->first.c_str());
 	auto build = setup_build(*target, cfg->second, toolchains);
 	cull_build(build.first);
 	return execute_build(*target, build.first, cfg->second, build.second);

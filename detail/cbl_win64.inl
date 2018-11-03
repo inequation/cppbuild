@@ -25,6 +25,11 @@ namespace cbl
 			return '\\';
 		}
 
+		constexpr const char get_alt_path_separator()
+		{
+			return '/';
+		}
+
 		bool is_path_separator(char c)
 		{
 			// A lot of C++ code will use forward slashes, so support that as well.
@@ -32,18 +37,49 @@ namespace cbl
 		}
 	};
 
-	uint64_t now()
+	namespace time
 	{
-		uint64_t stamp = 0;
-		SYSTEMTIME st;
-		FILETIME ft;
-		GetSystemTime(&st);
-		if (SystemTimeToFileTime(&st, &ft))
+		uint64_t now()
 		{
-			stamp = (uint64_t)ft.dwLowDateTime;
-			stamp |= ((uint64_t)ft.dwHighDateTime) << 32;
+			uint64_t stamp = 0;
+			SYSTEMTIME st;
+			FILETIME ft;
+			GetSystemTime(&st);
+			if (SystemTimeToFileTime(&st, &ft))
+			{
+				stamp = (uint64_t)ft.dwLowDateTime;
+				stamp |= ((uint64_t)ft.dwHighDateTime) << 32;
+			}
+			return stamp;
 		}
-		return stamp;
+
+		void of_day(const uint64_t stamp, int *y, int *M, int *d, int *h, int *m, int *s, int *us)
+		{
+			FILETIME ft;
+			constexpr uint64_t low_mask = (1ull << (sizeof(ft.dwLowDateTime) * 8)) - 1;
+			constexpr uint64_t high_mask = ~low_mask;
+			constexpr uint64_t high_shift = sizeof(ft.dwLowDateTime) * 8;
+			ft.dwHighDateTime = (stamp & high_mask) >> high_shift;
+			ft.dwLowDateTime = stamp & low_mask;
+			
+			SYSTEMTIME utc, local;
+			FileTimeToSystemTime(&ft, &utc);
+			SystemTimeToTzSpecificLocalTime(nullptr, &utc, &local);
+
+			if (y) *y = local.wYear;
+			if (M) *M = local.wMonth;
+			if (d) *d = local.wDay;
+			if (h) *h = local.wHour;
+			if (m) *m = local.wMinute;
+			if (s) *s = local.wSecond;
+			if (us) *us = local.wMilliseconds * 1000;
+		}
+
+		uint64_t duration_usec(uint64_t begin, uint64_t end)
+		{
+			// 1 tick = 100 ns -> 1000 
+			return (end - begin) / 10;
+		}
 	}
 	
 	namespace fs
@@ -143,6 +179,7 @@ namespace cbl
 		{
 			if (CopyFileA(existing_path, new_path, (!!(flags & overwrite)) ? FALSE : TRUE))
 			{
+				cbl::log(cbl::severity::verbose, "Copied file %s to %s, copy flags 0x%X", existing_path, new_path, flags);
 				if (!!(flags & maintain_timestamps))
 				{
 					HANDLE ef = CreateFileA(existing_path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -156,7 +193,7 @@ namespace cbl
 							{
 								if (!SetFileTime(nf, stamps + 0, stamps + 1, stamps + 2))
 								{
-									printf("Failed to set file access time on %s, "
+									cbl::warning("Failed to set file access time on %s, "
 										"the file might be erroneously treated as up-to-date\n",
 										new_path);
 								}
@@ -168,12 +205,56 @@ namespace cbl
 				}
 				return true;
 			}
+			cbl::warning("Failed to copy file %s to %s, copy flags 0x%X", existing_path, new_path, flags);
+			return false;
+		}
+
+		bool move_file(const char *existing_path, const char *new_path, copy_flags flags)
+		{
+			if (MoveFileExA(existing_path, new_path, MOVEFILE_WRITE_THROUGH | MOVEFILE_COPY_ALLOWED | ((!!(flags & overwrite)) ? 0 : MOVEFILE_REPLACE_EXISTING)))
+			{
+				cbl::log(cbl::severity::verbose, "Moved file %s to %s, copy flags 0x%X", existing_path, new_path, flags);
+				if (!!(flags & maintain_timestamps))
+				{
+					HANDLE ef = CreateFileA(existing_path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
+					if (ef != INVALID_HANDLE_VALUE)
+					{
+						FILETIME stamps[3];
+						if (GetFileTime(ef, stamps + 0, stamps + 1, stamps + 2))
+						{
+							HANDLE nf = CreateFileA(new_path, FILE_WRITE_ATTRIBUTES, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+							if (nf != INVALID_HANDLE_VALUE)
+							{
+								if (!SetFileTime(nf, stamps + 0, stamps + 1, stamps + 2))
+								{
+									cbl::warning("Failed to set file access time on %s, "
+										"the file might be erroneously treated as up-to-date\n",
+										new_path);
+								}
+								CloseHandle(nf);
+							}
+						}
+						CloseHandle(ef);
+					}
+				}
+				return true;
+			}
+			cbl::warning("Failed to move file %s to %s, copy flags 0x%X", existing_path, new_path, flags);
 			return false;
 		}
 
 		bool delete_file(const char *path)
 		{
-			return DeleteFileA(path);
+			if (DeleteFileA(path))
+			{
+				cbl::log(cbl::severity::verbose, "Deleted file %s", path);
+				return true;
+			}
+			else
+			{
+				cbl::warning("Failed to delete file %s", path);
+				return true;
+			}
 		}
 	}
 
@@ -245,18 +326,25 @@ namespace cbl
 		char cwd[260];
 		GetCurrentDirectoryA(sizeof(cwd), cwd);
 
-		if (!CreateProcessA(nullptr, const_cast<LPSTR>(commandline), nullptr, nullptr, TRUE, 0, environment, cwd, &start_info, &proc_info))
+		if (!CreateProcessA(nullptr, const_cast<LPSTR>(commandline), nullptr, nullptr, FALSE, 0, environment, cwd, &start_info, &proc_info))
 		{
 			DWORD error = GetLastError();
 			char buffer[256];
 			FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
 				nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
 				buffer, (sizeof(buffer) / sizeof(buffer[0])), nullptr);
+			buffer[sizeof(buffer) - 1] = 0;
+
+			cbl::error("Failed to launch: %s", commandline);
+			cbl::error("Reason: %s", buffer);
+
 			safe_close_handles(in);
 			safe_close_handles(out);
 			safe_close_handles(err);
 			return nullptr;
 		}
+
+		cbl::log(cbl::severity::verbose, "Launched process #%d, handle #%d: %s", proc_info.dwProcessId, (uintptr_t)proc_info.hProcess, commandline);
 
 		if (stdin_buffer)
 		{
@@ -278,6 +366,10 @@ namespace cbl
 
 	int process::wait()
 	{
+		std::string desc = "Waiting for process handle #";
+		desc += std::to_string((uintptr_t)handle);
+		cbl::time::scoped_timer _(desc.c_str(), cbl::severity::verbose);
+
 		int exit_code = -1;
 		auto read_pipe_to_callback = [](HANDLE pipe[2], std::vector<uint8_t> &buffer, pipe_output_callback& cb)
 		{
@@ -335,6 +427,7 @@ namespace cbl
 
 	void process::detach()
 	{
+		cbl::log(cbl::severity::verbose, "Detaching process handle #%d", (uintptr_t)handle);
 		CloseHandle(handle);
 		handle = INVALID_HANDLE_VALUE;
 		auto safe_close_handles = [](HANDLE h[2])
@@ -384,6 +477,8 @@ namespace cbl
 		{
 			s.push_back(0);
 		}
+		// Trim to the actually used characters.
+		s.resize(strlen(s.c_str()));
 		return s;
 	}
 

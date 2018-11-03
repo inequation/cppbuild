@@ -5,10 +5,13 @@ namespace cbl
 	namespace path
 	{
 		constexpr const char get_path_separator();
+		constexpr const char get_alt_path_separator();
 		bool is_path_separator(char c);
 
 		std::string get_extension(const char *path);
 		std::string get_path_without_extension(const char *path);
+		std::string get_directory(const char *path);
+		std::string get_basename(const char *path);
 
 		// Splits a path along path separators.
 		string_vector split(const char *path);
@@ -33,6 +36,7 @@ namespace cbl
 		};
 		copy_flags operator|(copy_flags a, copy_flags b) { return (copy_flags)((int)a | (int)b); }
 		bool copy_file(const char *existing_path, const char *new_path, copy_flags flags);
+		bool move_file(const char *existing_path, const char *new_path, copy_flags flags);
 		bool delete_file(const char *path);
 	};
 
@@ -45,7 +49,7 @@ namespace cbl
 			c.platform = p;
 			c.emit_debug_information = true;
 			c.optimize = configuration::O1;
-			c.definitions.push_back(std::make_pair("_DEBUG", ""));
+			c.use_debug_crt = true;
 			return c;
 		};
 
@@ -55,7 +59,7 @@ namespace cbl
 			c.platform = p;
 			c.emit_debug_information = true;
 			c.optimize = configuration::O2;
-			c.definitions.push_back(std::make_pair("NDEBUG", "1"));
+			c.use_debug_crt = true;
 			return c;
 		};
 
@@ -65,7 +69,7 @@ namespace cbl
 			c.platform = p;
 			c.emit_debug_information = true;
 			c.optimize = configuration::O3;
-			c.definitions.push_back(std::make_pair("NDEBUG", "2"));
+			c.use_debug_crt = false;
 			return c;
 		};
 	};
@@ -107,6 +111,21 @@ namespace cbl
 
 	constexpr const char* get_default_toolchain_for_host();
 
+	enum class severity : uint8_t
+	{
+		verbose,
+		info,
+		warning,
+		error
+	};
+	void log(severity, const char *fmt, ...);
+	// Alias for log(info, ...).
+	void info(const char* fmt, ...);
+	// Alias for log(warning, ...).
+	void warning(const char* fmt, ...);
+	// Alias for log(error, ...).
+	void error(const char* fmt, ...);
+
 	// Wraps a single string in a vector.
 	string_vector vwrap(const std::string& s);
 	// Wraps a string vector in a callable functor.
@@ -118,6 +137,26 @@ namespace cbl
 	// Concatenates the string using the specified glue string.
 	std::string join(const string_vector& v, const char *glue);
 
-	// Returns a filesystem-specific, platform-specific timestamp for the current point in time.
-	uint64_t now();
+	namespace time
+	{
+		// Returns an opaque, filesystem-specific, platform-specific timestamp for the current point in time.
+		uint64_t now();
+
+		// Breaks down an opaque, 64-bit stamp into year/month/day (indexed from 1) and hours/minutes/seconds/microseconds (indexed from 0) in the local time zone.
+		void of_day(const uint64_t stamp, int *year, int *month, int *day, int *hour, int *minute, int *second, int *us);
+
+		// Converts a difference of opaque, 64-bit stamps, in microseconds.
+		uint64_t duration_usec(uint64_t begin, uint64_t end);
+
+		// Scoped timer (RAII-style) that outputs the time elapsed from construction to destruction in the format of "%s: %3.4fs".
+		struct scoped_timer
+		{
+			scoped_timer(const char *label, severity severity = severity::info);
+			~scoped_timer();
+		private:
+			uint64_t start;
+			const char *label;
+			severity s;
+		};
+	}
 }

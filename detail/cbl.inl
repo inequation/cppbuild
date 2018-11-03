@@ -88,6 +88,38 @@ namespace cbl
 			}
 		}
 
+		std::string get_directory(const char *path)
+		{
+			if (const char* sep = strrchr(path, get_path_separator()))
+			{
+				return std::string(path, sep - path);
+			}
+			else if (const char* sep = strrchr(path, get_alt_path_separator()))
+			{
+				return std::string(path, sep - path);
+			}
+			else
+			{
+				return std::string(path);
+			}
+		}
+
+		std::string get_basename(const char *path)
+		{
+			if (const char* sep = strrchr(path, get_path_separator()))
+			{
+				return get_path_without_extension(sep + 1);
+			}
+			else if (const char* sep = strrchr(path, get_alt_path_separator()))
+			{
+				return get_path_without_extension(sep + 1);
+			}
+			else
+			{
+				return get_path_without_extension(path);
+			}
+		}
+
 		std::string join(const std::string& a, const std::string& b)
 		{
 			if (!a.empty() && *(a.end() - 1) != get_path_separator())
@@ -102,8 +134,7 @@ namespace cbl
 
 		const char *get_cppbuild_cache_path()
 		{
-			static std::string cached = path::join("cppbuild", "cache");
-			return cached.c_str();
+			return "cppbuild-cache";
 		}
 	};
 
@@ -158,30 +189,147 @@ namespace cbl
 		return result;
 	}
 
-	bool mkdir(const char *path, bool make_parent_directories)
+	namespace detail
 	{
-#if defined(_WIN64)
-		if (make_parent_directories)
+		static constexpr severity log_level = severity::verbose;	// FIXME: Put in config.
+
+		static FILE *log_file_stream;
+
+		void rotate_logs()
 		{
-			auto elements = path::split(path);
-			std::string intermediate;
-			for (auto& e : elements)
+			static bool rotated = false;
+			if (rotated)
 			{
-				intermediate = path::join(intermediate, e);
-				const bool full = (&e == &elements.back());
-				if (!CreateDirectoryA(intermediate.c_str(), nullptr) && full)
+				return;
+			}
+			rotated = true;
+
+			std::string log_dir = path::join(path::get_cppbuild_cache_path(), "log");
+			fs::mkdir(log_dir.c_str(), true);
+			std::string log = path::join(log_dir, "cppbuild.log");
+			uint64_t stamp = fs::get_modification_timestamp(log.c_str());
+			if (stamp != 0)
+			{
+				int y, M, d, h, m, s, us;
+				time::of_day(stamp, &y, &M, &d, &h, &m, &s, &us);
+				char new_name[36];
+				std::string old_log = path::join(log_dir, "cppbuild-");
+				uint64_t number = uint64_t(y) * 10000 + uint64_t(M) * 100 + uint64_t(d);
+				old_log += std::to_string(number) + "-";
+				number = uint64_t(h) * 10000 + uint64_t(m) * 100 + uint64_t(s);
+				old_log += std::to_string(number) + "-";
+				old_log += std::to_string(us) + ".log";
+				if (!fs::move_file(log.c_str(), old_log.c_str(), fs::maintain_timestamps))
 				{
-					return false;
+					warning("Failed to rotate log file %s to %s", log.c_str(), old_log.c_str());
 				}
 			}
-			return true;
+			log_file_stream = fopen(log.c_str(), "w");
+			atexit([]() { fclose(log_file_stream); });
 		}
-		else
+
+		void log(severity severity, const char *fmt, va_list va)
 		{
-			return CreateDirectoryA(path, nullptr);
+			static thread_local char static_buf[1024];
+			if (log_level <= severity)
+			{
+				rotate_logs();
+
+				int required = vsnprintf(nullptr, 0, fmt, va);
+				if (required > 0)
+				{
+					required += 1;
+					char *buffer = required + 1 <= sizeof(static_buf)
+						? static_buf
+						: new char[required + 1];
+					vsnprintf(buffer, required, fmt, va);
+					buffer[required - 1] = '\n';
+					buffer[required] = 0;
+					FILE *output_stream = nullptr;
+					switch (severity)
+					{
+					case severity::warning:
+					case severity::error:
+						output_stream = stderr;
+						break;
+					default:
+						output_stream = stdout;
+						break;
+					}
+					static constexpr const char *severity_tags[] =
+					{
+						"[Verbose]",
+						"[Info]",
+						"[Warning]",
+						"[Error]"
+					};
+					int h, m, s, us;
+					time::of_day(time::now(), nullptr, nullptr, nullptr, &h, &m, &s, &us);
+					auto emit = [&](FILE *stream)
+					{
+						fprintf(stream, "[%02d:%02d:%02d.%03d]%s ", h, m, s, us / 1000, severity_tags[(int)severity]);
+						fputs(buffer, stream);
+					};
+					emit(output_stream);
+					if (log_file_stream)
+					{
+						emit(log_file_stream);
+					}
+					if (buffer != static_buf)
+					{
+						delete[] buffer;
+					}
+				}
+			}
 		}
-#else
-	#error Unsupported platform
-#endif
+	}
+
+	void log(severity s, const char *fmt, ...)
+	{
+		va_list va;
+		va_start(va, &fmt);
+		detail::log(s, fmt, va);
+		va_end(va);
+	}
+
+	void info(const char *fmt, ...)
+	{
+		va_list va;
+		va_start(va, &fmt);
+		detail::log(severity::info, fmt, va);
+		va_end(va);
+	}
+
+	void warning(const char *fmt, ...)
+	{
+		va_list va;
+		va_start(va, &fmt);
+		detail::log(severity::warning, fmt, va);
+		va_end(va);
+	}
+
+	void error(const char *fmt, ...)
+	{
+		va_list va;
+		va_start(va, &fmt);
+		detail::log(severity::error, fmt, va);
+		va_end(va);
+	}
+
+	namespace time
+	{
+		scoped_timer::scoped_timer(const char *in_label, severity severity)
+			: start(now())
+			, label(in_label)
+			, s(severity)
+		{
+			log(s, "[Start] %s", label);
+		}
+
+		scoped_timer::~scoped_timer()
+		{
+			uint64_t duration = duration_usec(start, now());
+			log(s, "[End  ] %s: %3.4fs", label, float(duration) * 0.000001f);
+		}
 	}
 };

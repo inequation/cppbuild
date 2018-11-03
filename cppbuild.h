@@ -25,9 +25,12 @@ struct configuration
 		O0, O1, O2, O3,
 		Os = 100
 	} optimize;
-
+	bool use_debug_crt;
+	
 	std::vector<std::pair<std::string, std::string>> definitions;
 	string_vector additional_include_directories;
+
+	bool use_incremental_linking;
 
 	std::unordered_map<std::string, string_vector> additional_toolchain_options;
 };
@@ -85,6 +88,7 @@ struct toolchain
 		const std::string& path,
 		const configuration&)
 	{ return nullptr; };
+	virtual bool deploy_executable_with_debug_symbols(const char *existing_path, const char *new_path) = 0;
 };
 
 int build_target(target&, configuration&);
@@ -139,6 +143,7 @@ namespace graph
 		std::shared_ptr<toolchain> tc,
 		const cbl::pipe_output_callback& on_stderr,
 		const cbl::pipe_output_callback& on_stdout);
+	void clean_build_graph_outputs(std::shared_ptr<action> root);
 };
 
 void discover_toolchains(toolchain_map& toolchains);
