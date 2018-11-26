@@ -17,44 +17,77 @@ struct msvc : public toolchain
 	{
 		return cbl::path::get_path_without_extension(source.c_str()) + ".obj";
 	}
+	
+	static void detect_windows_sdks(
+		std::unordered_map<cbl::version, std::string>& sdk_dirs,
+		std::unordered_map<cbl::version, std::string>& crt_dirs
+	)
+	{
+		using namespace cbl;
+		using namespace win64::registry;
+
+		// Enumerate the Windows 8.1 SDK, if present.
+		std::string install_dir;
+		
+		install_dir.resize(MAX_PATH);
+		if (try_read_software_path_key("Microsoft\\Microsoft SDKs\\Windows\\v8.1", "InstallationFolder", install_dir))
+		{
+			if (0 != cbl::fs::get_modification_timestamp(path::join(install_dir, path::join("Include", path::join("um", "windows.h"))).c_str()))
+			{
+				log(severity::verbose, "Found Windows 8.1 SDK at %s", install_dir.c_str());
+				sdk_dirs[{ 8, 1, 0 }] = install_dir;
+			}
+		}
+
+		// Find all the root directories for Windows 10 SDKs.
+		string_vector roots;
+		if (try_read_software_path_key("Microsoft\\Windows Kits\\Installed Roots", "KitsRoot10", install_dir))
+		{
+			roots.push_back(install_dir);
+		}
+		if (try_read_software_path_key("Microsoft\\Microsoft SDKs\\Windows\\v10.0", "InstallationFolder", install_dir))
+		{
+			roots.push_back(install_dir);
+		}
+
+		// Enumerate all the Windows 10 SDKs.
+		for (const auto& root : roots)
+		{
+			std::string include_dir = path::join(root, "Include");
+			auto dirs = fs::enumerate_directories(path::join(include_dir, "*").c_str());
+			for (const auto& dir : dirs)
+			{
+				auto elements = path::split(dir.c_str());
+				cbl::version number{ 0, 0, 0 };
+				if (0 < sscanf(elements.back().c_str(), "%zu.%zu.%zu.%*zu", &number.major, &number.minor, &number.patch))
+				{
+					if (0 != cbl::fs::get_modification_timestamp(path::join(dir, path::join("um", "windows.h")).c_str()))
+					{
+						log(severity::verbose, "Found Windows 10 SDK %zu at %s", number.patch, dir.c_str());
+						sdk_dirs[number] = dir;
+					}
+					if (0 != cbl::fs::get_modification_timestamp(path::join(dir, path::join("ucrt", "corecrt.h")).c_str()))
+					{
+						log(severity::verbose, "Found Windows 10 Universal CRT %zu at %s", number.patch, dir.c_str());
+						crt_dirs[number] = dir;
+					}
+				}
+			}
+		}
+	}
 
 	void initialize(const configuration& cfg) override
 	{
-		/*std::string cmdline = "cmd /c \"\"";
-		cmdline += get_vcvarsall_bat_path();
-		cmdline += "\" ";
-		switch (cfg.platform)
-		{
-		case platform::win64:
-			cmdline += "x64";
-			break;
-		default:
-			assert(0);
-		}
-		cmdline += " && cls && set\"";
-		cbl::process::run(cmdline.c_str(), nullptr, &environment_block);
-		if (!environment_block.empty())
-		{
-			environment_block.push_back(0);	// Ensure string null termination.
-			const char *env = (char*)environment_block.data();
-			if (const char *np = strchr(env, 0xC))
-			{
-				environment_block.erase(environment_block.begin(), environment_block.begin() + (np - env) + 1);
-				env = (char*)environment_block.data();
-			}
-			while (const char *cr = strchr(env, '\r'))
-			{
-				environment_block.erase(environment_block.begin() + (cr - env));
-				env = (char*)environment_block.data();
-			}
-			while (char *nl = const_cast<char *>(strchr(env, '\n')))
-			{
-				*nl = 0;
-				env = nl + 1;
-			}
-			environment_block.push_back(0);	// Ensure block null termination.
-			environment_block.shrink_to_fit();
-		}*/
+		using elem = std::pair<cbl::version, std::string>;
+		std::unordered_map<elem::first_type, elem::second_type> sdk_dirs, crt_dirs;
+		detect_windows_sdks(sdk_dirs, crt_dirs);
+		// FIXME: Enable SDK version choice instead of picking the newest.
+		auto sdk_it = std::max_element(sdk_dirs.begin(), sdk_dirs.end(), [](const elem& a, const elem& b) { return a.first < b.first; });
+		if (sdk_it != sdk_dirs.end())
+			sdk_dir = sdk_it->second;
+		auto ucrt_it = std::max_element(crt_dirs.begin(), crt_dirs.end(), [](const elem& a, const elem& b) { return a.first < b.first; });
+		if (ucrt_it != crt_dirs.end())
+			ucrt_dir = ucrt_it->second;
 	}
 
 	std::shared_ptr<cbl::process> invoke_compiler(
@@ -67,7 +100,7 @@ struct msvc : public toolchain
 	{
 		std::string cmdline = generate_cl_commandline_shared(target, cfg, false);
 		cmdline += " /c /Fo" + object + " " + source;
-		return cbl::process::start_async(cmdline.c_str(), on_stderr, on_stdout, nullptr, environment_block.empty() ? nullptr : environment_block.data());
+		return cbl::process::start_async(cmdline.c_str(), on_stderr, on_stdout, nullptr, nullptr);
 	}
 
 	std::shared_ptr<cbl::process> invoke_linker(
@@ -101,7 +134,7 @@ struct msvc : public toolchain
 						cmdline += " " + o;
 					}
 				}
-				return cbl::process::start_async(cmdline.c_str(), on_stderr, on_stdout, nullptr, environment_block.empty() ? nullptr : environment_block.data());
+				return cbl::process::start_async(cmdline.c_str(), on_stderr, on_stdout, nullptr, nullptr);
 			}
 		default:
 			assert(!"Unimplmented");
@@ -112,6 +145,8 @@ struct msvc : public toolchain
 
 	void generate_dependency_actions_for_cpptu(const target& target, const std::string& source, const configuration& cfg, std::vector<std::shared_ptr<graph::action>>& inputs)
 	{
+		auto& cache = graph::get_timestamp_cache();
+
 		std::string cmdline = generate_cl_commandline_shared(target, cfg, false);
 		cmdline += " /c /showIncludes /P /FiNUL";
 		std::vector<uint8_t> buffer;
@@ -122,7 +157,7 @@ struct msvc : public toolchain
 		cmdline += " " + source;
 		// Documentation says "The /showIncludes option emits to stderr, not stdout", but that seems to be a lie.
 		// TODO: Cache!!! This doesn't need to run every single invocation!
-		auto p = cbl::process::start_async(cmdline.c_str(), append_to_buffer, append_to_buffer, nullptr, environment_block.empty() ? nullptr : environment_block.data());
+		auto p = cbl::process::start_async(cmdline.c_str(), append_to_buffer, append_to_buffer, nullptr, nullptr);
 		if (p && 0 == p->wait())
 		{
 			constexpr const char needle[] = "Note: including file: ";
@@ -150,7 +185,20 @@ struct msvc : public toolchain
 					inputs.push_back(dep_action);
 				}
 			} while (s);
+
+			graph::dependency_timestamp_vector deps;
+			for (const auto& i : inputs)
+			{
+				if (i->output_timestamps.empty())
+				{
+					i->update_output_timestamps();
+				}
+				deps.push_back(std::make_pair(i->outputs[0], i->output_timestamps[0]));
+			}
+			cache[source] = deps;
 		}
+
+		graph::save_timestamp_cache();
 	}
 
 	std::shared_ptr<graph::action> generate_compile_action_for_cpptu(const target& target, const std::string& tu_path, const configuration& cfg) override
@@ -186,7 +234,8 @@ struct msvc : public toolchain
 	{}
 
 private:
-	std::vector<uint8_t> environment_block;
+	std::string sdk_dir;
+	std::string ucrt_dir;
 
 	std::string generate_cl_commandline_shared(const target& target, const configuration& cfg, const bool for_linking)
 	{
