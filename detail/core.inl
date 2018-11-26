@@ -13,9 +13,38 @@
 
 typedef std::vector<std::string> string_vector;
 
-constexpr struct
+namespace cbl
 {
-	size_t major, minor, patch;
+	struct version
+	{
+		size_t major, minor, patch;
+
+		bool operator==(const version& other) const { return 0 == memcmp(this, &other, sizeof(*this)); }
+		bool operator<(const version& other) const
+		{
+			return major < other.major || (major == other.major &&
+					minor < other.minor || (minor == other.minor &&
+						patch < other.patch));
+		}
+	};
+}
+
+namespace std
+{
+	template <> struct hash<cbl::version>
+	{
+		size_t operator()(const cbl::version &v) const
+		{
+			hash<size_t> hasher;
+			auto combine = [](size_t a, size_t b) { return a ^ (b + 0x9e3779b9 + (a << 6) + (a >> 2)); };
+			return combine(hasher(v.major), combine(hasher(v.minor), hasher(v.patch)));
+		}
+	};
+}
+
+constexpr struct cppbuild_version
+{
+	cbl::version number;
 	const bool self_hosted =
 #if CPPBUILD_SELF_HOSTED
 		true
@@ -23,7 +52,7 @@ constexpr struct
 		false
 #endif
 		;
-} cppbuild_version = { 0, 0, 0 };
+} cppbuild_version = { { 0, 0, 0 } };
 
 enum class error_code : int
 {
