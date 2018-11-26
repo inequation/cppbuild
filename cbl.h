@@ -24,6 +24,7 @@ namespace cbl
 	namespace fs
 	{
 		string_vector enumerate_files(const char *path);
+		string_vector enumerate_directories(const char *path);
 
 		uint64_t get_modification_timestamp(const char *path);
 
@@ -160,3 +161,7 @@ namespace cbl
 		};
 	}
 }
+
+#if _WIN64
+	#include "cbl_win64.h"
+#endif

@@ -9,6 +9,7 @@
 	#define WIN32_LEAN_AND_MEAN
 	#define NOMINMAX
 	#include <Windows.h>
+	#pragma comment(lib, "advapi32.lib")
 #endif
 
 namespace cbl
@@ -101,55 +102,68 @@ namespace cbl
 			return stamp;
 		}
 
-		string_vector enumerate_files(const char *path)
+		namespace detail
 		{
-			string_vector path_elements = path::split(path);
-			std::string& wildcard = path_elements.back();	// Assume that the final element is the wildcard.
-
-			auto glob_it = std::find_if(path_elements.begin(), path_elements.end(), [](const std::string& s) { return s.compare("**") == 0; });
-			const bool recursive = glob_it != path_elements.end();
-			std::string root_path;
-			for (auto it = path_elements.begin(); it != (recursive ? glob_it : (path_elements.end() - 1)); ++it)
-				root_path = path::join(root_path, *it);
-
-			string_vector found;
-			auto find_impl = [](const std::string& root_path, const std::string& wildcard, std::function<void(const WIN32_FIND_DATAA& data, const std::string& parent)> visitor)
+			string_vector enumerate_fs_items(const char *path, const bool files)
 			{
-				WIN32_FIND_DATAA data;
-				HANDLE handle = FindFirstFileA(path::join(root_path, wildcard).c_str(), &data);
-				if (handle != INVALID_HANDLE_VALUE)
+				string_vector path_elements = path::split(path);
+				std::string& wildcard = path_elements.back();	// Assume that the final element is the wildcard.
+
+				auto glob_it = std::find_if(path_elements.begin(), path_elements.end(), [](const std::string& s) { return s.compare("**") == 0; });
+				const bool recursive = glob_it != path_elements.end();
+				std::string root_path;
+				for (auto it = path_elements.begin(); it != (recursive ? glob_it : (path_elements.end() - 1)); ++it)
+					root_path = path::join(root_path, *it);
+
+				string_vector found;
+				auto find_impl = [](const std::string& root_path, const std::string& wildcard, std::function<void(const WIN32_FIND_DATAA& data, const std::string& parent)> visitor)
 				{
-					do
+					WIN32_FIND_DATAA data;
+					HANDLE handle = FindFirstFileA(path::join(root_path, wildcard).c_str(), &data);
+					if (handle != INVALID_HANDLE_VALUE)
 					{
-						if (0 != strcmp(data.cFileName, ".") && 0 != strcmp(data.cFileName, ".."))
+						do
 						{
-							visitor(data, root_path);
-						}
-					} while (FindNextFileA(handle, &data));
+							if (0 != strcmp(data.cFileName, ".") && 0 != strcmp(data.cFileName, ".."))
+							{
+								visitor(data, root_path);
+							}
+						} while (FindNextFileA(handle, &data));
 
-					FindClose(handle);
-				}
-			};
+						FindClose(handle);
+					}
+				};
 
-			find_impl(root_path, wildcard, [&found](const WIN32_FIND_DATAA& data, const std::string& parent)
-			{
-				if (!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+				find_impl(root_path, wildcard, [&found, files](const WIN32_FIND_DATAA& data, const std::string& parent)
 				{
-					found.push_back(path::join(parent, data.cFileName));
-				}
-			});
-			if (recursive)
-			{
-				find_impl(root_path, "*", [&found, &wildcard](const WIN32_FIND_DATAA& data, const std::string& parent)
-				{
-					if (!!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+					if (files == !(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
 					{
-						string_vector subset = enumerate_files(path::join(path::join(parent, data.cFileName), path::join("**", wildcard)).c_str());
-						found.insert(found.end(), subset.begin(), subset.end());
+						found.push_back(path::join(parent, data.cFileName));
 					}
 				});
+				if (recursive)
+				{
+					find_impl(root_path, "*", [&found, &wildcard, files](const WIN32_FIND_DATAA& data, const std::string& parent)
+					{
+						if (!!(data.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+						{
+							string_vector subset = enumerate_fs_items(path::join(path::join(parent, data.cFileName), path::join("**", wildcard)).c_str(), files);
+							found.insert(found.end(), subset.begin(), subset.end());
+						}
+					});
+				}
+				return found;
 			}
-			return found;
+		}
+
+		string_vector enumerate_files(const char *path)
+		{
+			return detail::enumerate_fs_items(path, true);
+		}
+
+		string_vector enumerate_directories(const char *path)
+		{
+			return detail::enumerate_fs_items(path, false);
 		}
 
 		bool mkdir(const char *path, bool make_parent_directories)
@@ -487,6 +501,118 @@ namespace cbl
 		if (HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid))
 		{
 			WaitForSingleObject(h, INFINITE);
+		}
+	}
+
+	namespace win64
+	{
+		namespace registry
+		{
+			bool read_key(hkey root_key, const char *sub_key, const char *value_name, void *in_buffer, size_t& in_out_size, const type& expected_type)
+			{
+				auto hkey_to_enum = [](hkey k)
+				{
+					switch (k)
+					{
+					case hkey::classes_root: return HKEY_CLASSES_ROOT;
+					case hkey::current_config: return HKEY_CURRENT_CONFIG;
+					case hkey::current_user: return HKEY_CURRENT_USER;
+					case hkey::local_machine: return HKEY_LOCAL_MACHINE;
+					case hkey::users: return HKEY_USERS;
+					default: assert(!"Invalid key"); return (HKEY)0;
+					}
+				};
+
+				auto type_conforms = [](decltype(REG_DWORD) windows_type, type cbl_type)
+				{
+					switch (cbl_type)
+					{
+					case type::binary_blob: return true;
+					case type::dword: return windows_type == REG_DWORD || windows_type == REG_DWORD_BIG_ENDIAN || windows_type == REG_DWORD_LITTLE_ENDIAN;
+					case type::string: return windows_type == REG_SZ || windows_type == REG_LINK || windows_type == REG_EXPAND_SZ;
+					case type::multiple_strings: return windows_type == REG_MULTI_SZ;
+					case type::qword: return windows_type == REG_QWORD || windows_type == REG_QWORD_LITTLE_ENDIAN;
+					default: assert(!"Invalid type"); return false;
+					}
+				};
+
+				auto enum_to_type = [](decltype(REG_DWORD) windows_type)
+				{
+					switch (windows_type)
+					{
+					case REG_DWORD:
+					case REG_DWORD_BIG_ENDIAN:
+					//case REG_DWORD_LITTLE_ENDIAN:
+						return type::dword;
+					case REG_SZ:
+					case REG_LINK:
+					case REG_EXPAND_SZ:
+						return type::string;
+					case REG_MULTI_SZ:
+						return type::multiple_strings;
+					case REG_QWORD:
+					//case REG_QWORD_LITTLE_ENDIAN:
+						return type::qword;
+					default:
+						return type::binary_blob;
+					}
+				};
+
+				HKEY handle;
+				LSTATUS result;
+				result = RegOpenKeyExA(hkey_to_enum(root_key), sub_key, 0, KEY_READ, &handle);
+				if (result == ERROR_SUCCESS)
+				{
+					DWORD buffer_length = 0;
+					DWORD type = 0;
+					result = RegQueryValueExA(handle, value_name, nullptr, &type, nullptr, &buffer_length);
+					if (result == ERROR_SUCCESS)
+					{
+						if (buffer_length <= in_out_size && type_conforms(type, expected_type))
+						{
+							in_out_size = buffer_length;
+							result = RegQueryValueExA(handle, value_name, nullptr, &type, (BYTE*)in_buffer, &buffer_length);
+							if (result == ERROR_SUCCESS)
+							{
+								RegCloseKey(handle);
+								return true;
+							}
+						}
+					}
+					RegCloseKey(handle);
+				}
+				
+				return false;
+			}
+
+			bool try_read_software_key(const char *sub_key, const char *value_name, void *in_buffer, size_t& in_out_size, const type& expected_type)
+			{
+				static constexpr const char software[] = "SOFTWARE";
+				static constexpr const char wow64[] = "WOW6432Node";
+
+				if (read_key(hkey::current_user, path::join(software, sub_key).c_str(), value_name, in_buffer, in_out_size, expected_type))
+					return true;
+				else if(read_key(hkey::local_machine, path::join(software, sub_key).c_str(), value_name, in_buffer, in_out_size, expected_type))
+					return true;
+				else if (read_key(hkey::current_user, path::join(path::join(software, wow64), sub_key).c_str(), value_name, in_buffer, in_out_size, expected_type))
+					return true;
+				else if (read_key(hkey::local_machine, path::join(path::join(software, wow64), sub_key).c_str(), value_name, in_buffer, in_out_size, expected_type))
+					return true;
+				return false;
+			}
+
+			bool try_read_software_path_key(const char *sub_key, const char *value_name, std::string &in_out_path)
+			{
+				in_out_path.resize(MAX_PATH);
+				size_t size = in_out_path.size();
+				if (try_read_software_key(sub_key, value_name, (void *)in_out_path.data(), size, type::string))
+				{
+					in_out_path.resize(size - 1);
+					return true;
+				}
+				return false;
+			}
+			
 		}
 	}
 }
