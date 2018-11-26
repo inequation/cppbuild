@@ -3,6 +3,8 @@
 // Includes here are for the benefit of syntax highlighting systems, #pragma once prevents recursion.
 #include "../cppbuild.h"
 
+#include <mutex>
+
 namespace graph
 {
 	std::shared_ptr<action> generate_cpp_build_graph(const target& target, const configuration& cfg, std::shared_ptr<toolchain> tc)
@@ -233,6 +235,138 @@ namespace graph
 			}
 
 			return outputs > newest_input;
+		}
+	}
+
+	namespace detail
+	{
+		union magic
+		{
+			char c[4];
+			uint32_t i;
+		};
+
+		static constexpr magic cache_magic = { 'C', 'B', 'T', 'C' };
+		// Increment this counter every time the cache binary format changes. 
+		static constexpr uint32_t cache_version = 0;
+
+		template <size_t(* serializer)(void *ptr, size_t size, size_t nmemb, FILE *stream), void(* on_success)(const char *key, const char *path, uint64_t stamp) = nullptr>
+		void serialize_cache_items(timestamp_cache& cache, FILE *stream)
+		{
+			magic m = cache_magic;
+			if (1 == serializer(&m, sizeof(m), 1, stream) && m.i == cache_magic.i)
+			{
+				uint32_t v = cache_version;
+				if (1 == serializer(&v, sizeof(v), 1, stream) && v == cache_version)
+				{
+					uint32_t length;
+					auto key_it = cache.begin();
+					std::string str, key;
+					uint64_t stamp;
+
+					auto serialize_str = [stream](std::string& str) -> bool
+					{
+						uint32_t length = str.length();
+						bool success = (1 == serializer(&length, sizeof(length), 1, stream));
+						if (success)
+						{
+							str.resize(length);
+							success = length == serializer(const_cast<char *>(str.data()), 1, length, stream);
+							if (success)
+							{
+								str.push_back(0);
+								str.resize(length);
+							}
+						}
+						return success;
+					};
+
+					size_t key_count = cache.size();
+					if (1 == serializer(&key_count, sizeof(key_count), 1, stream))
+					{
+						bool success;
+						do
+						{
+							if (key_it != cache.end())
+							{
+								key = key_it->first;
+							}
+							if (!key.empty())
+							{
+								success = serialize_str(key);
+								if (success)
+								{
+									auto& vec = cache[key];
+									length = vec.size();
+									success = 1 == serializer(&length, sizeof(length), 1, stream);
+									if (success)
+									{
+										vec.resize(length);
+										for (uint32_t i = 0; success && i < length; ++i)
+										{
+											success = serialize_str(str);
+											if (success)
+											{
+												success = 1 == serializer(&stamp, sizeof(stamp), 1, stream);
+												if (success && on_success)
+												{
+													on_success(key.c_str(), str.c_str(), stamp);
+												}
+											}
+										}
+									}
+								}
+							}
+							if (++key_it == cache.end())
+								break;
+						} while (success);
+					}
+				}
+			}
+		}
+	};
+
+	timestamp_cache& get_timestamp_cache()
+	{
+		using namespace cbl;
+
+		static timestamp_cache *cache = nullptr;
+		if (!cache)
+		{
+			static std::mutex m;
+			std::lock_guard<std::mutex> _(m);
+			if (!cache)
+			{
+				cache = new timestamp_cache;
+				std::string cache_path = path::join(path::get_cppbuild_cache_path(), "timestamps.bin");
+				if (FILE *serialized = fopen(cache_path.c_str(), "rb"))
+				{
+					detail::serialize_cache_items<fread, nullptr>(*cache, serialized);
+					fclose(serialized);
+				}
+				else
+				{
+					log(severity::verbose, "Failed to open timestamp cache for reading from %s, using a blank slate", cache_path.c_str());
+				}
+			}	
+		}
+		return *cache;
+	}
+
+	void save_timestamp_cache()
+	{
+		using namespace cbl;
+
+		auto& cache = get_timestamp_cache();
+		std::string cache_path = path::join(path::get_cppbuild_cache_path(), "timestamps.bin");
+		if (FILE *serialized = fopen(cache_path.c_str(), "wb"))
+		{
+			detail::serialize_cache_items<(decltype(fread))fwrite, nullptr>(cache, serialized);
+			fclose(serialized);
+		}
+		else
+		{
+			log(severity::verbose, "Failed to open timestamp cache for writing to %s", cache_path.c_str());
 		}
 	}
 };

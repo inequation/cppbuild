@@ -134,6 +134,11 @@ namespace graph
 		bool are_dependencies_met() override;
 	};
 
+	using dependency_timestamp_vector = std::vector<std::pair<std::string, uint64_t>>;
+	using timestamp_cache = std::unordered_map<std::string, dependency_timestamp_vector>;
+	using timestamp_cache_entry = timestamp_cache::value_type;
+	timestamp_cache& get_timestamp_cache();
+
 	std::shared_ptr<action> generate_cpp_build_graph(const target& target, const configuration& c, std::shared_ptr<struct toolchain> tc);
 	void cull_build_graph(std::shared_ptr<action>& root);
 	int execute_build_graph(
