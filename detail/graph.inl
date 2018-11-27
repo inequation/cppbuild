@@ -250,7 +250,9 @@ namespace graph
 		// Increment this counter every time the cache binary format changes. 
 		static constexpr uint32_t cache_version = 0;
 
-		template <size_t(* serializer)(void *ptr, size_t size, size_t nmemb, FILE *stream), void(* on_success)(const char *key, const char *path, uint64_t stamp) = nullptr>
+		typedef size_t(*serializer)(void *ptr, size_t size, size_t nmemb, FILE *stream);
+
+		template <serializer serializer, void(* on_success)(const char *key, const char *path, uint64_t stamp) = nullptr>
 		void serialize_cache_items(timestamp_cache& cache, FILE *stream)
 		{
 			magic m = cache_magic;
@@ -291,38 +293,50 @@ namespace graph
 							{
 								key = key_it->first;
 							}
-							if (!key.empty())
+							success = serialize_str(key);
+							if (success)
 							{
-								success = serialize_str(key);
+								auto& vec = cache[key];
+								length = vec.size();
+								success = 1 == serializer(&length, sizeof(length), 1, stream);
 								if (success)
 								{
-									auto& vec = cache[key];
-									length = vec.size();
-									success = 1 == serializer(&length, sizeof(length), 1, stream);
-									if (success)
+									vec.resize(length);
+									for (uint32_t i = 0; success && i < length; ++i)
 									{
-										vec.resize(length);
-										for (uint32_t i = 0; success && i < length; ++i)
+										success = serialize_str(vec[i].first);
+										if (success)
 										{
-											success = serialize_str(str);
+											success = 1 == serializer(&vec[i].second, sizeof(vec[i].second), 1, stream);
 											if (success)
 											{
-												success = 1 == serializer(&stamp, sizeof(stamp), 1, stream);
-												if (success && on_success)
-												{
-													on_success(key.c_str(), str.c_str(), stamp);
-												}
+												if (on_success)
+													on_success(key.c_str(), vec[i].first.c_str(), vec[i].second);
 											}
+											else
+												cbl::log(cbl::severity::verbose, "[CacheSer] Failed to serialize value time stamp at index %d, key %s", i, key.c_str());
 										}
+										else
+											cbl::log(cbl::severity::verbose, "[CacheSer] Failed to serialize value string at index %d, key %s", i, key.c_str());
 									}
 								}
+								else
+									cbl::log(cbl::severity::verbose, "[CacheSer] Failed to serialize value vector length for key %s", key.c_str());
 							}
-							if (++key_it == cache.end())
+							else
+								cbl::log(cbl::severity::verbose, "[CacheSer] Failed to serialize key string");
+							if (key_count-- <= 1)
 								break;
 						} while (success);
 					}
+					else
+						cbl::log(cbl::severity::verbose, "[CacheSer] Failed to read cache key count");
 				}
+				else
+					cbl::log(cbl::severity::verbose, "[CacheSer] Version number mismatch (expected %d, got %d)", v, cache_version);
 			}
+			else
+				cbl::log(cbl::severity::verbose, "[CacheSer] Magic number mismatch (expected %08X, got %08X)", m.i, cache_magic.i);
 		}
 	};
 
@@ -361,7 +375,7 @@ namespace graph
 		std::string cache_path = path::join(path::get_cppbuild_cache_path(), "timestamps.bin");
 		if (FILE *serialized = fopen(cache_path.c_str(), "wb"))
 		{
-			detail::serialize_cache_items<(decltype(fread))fwrite, nullptr>(cache, serialized);
+			detail::serialize_cache_items<(detail::serializer)fwrite, nullptr>(cache, serialized);
 			fclose(serialized);
 		}
 		else

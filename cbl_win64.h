@@ -29,5 +29,7 @@ namespace cbl
 			bool try_read_software_key(const char *sub_key, const char *value_name, void *in_buffer, size_t& in_out_size, const type& expected_type);
 			bool try_read_software_path_key(const char *sub_key, const char *value_name, std::string &in_out_path);
 		}
+
+		bool wide_str_to_ansi_str(std::string& ansi, wchar_t *wide);
 	}
 }

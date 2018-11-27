@@ -10,6 +10,9 @@
 	#define NOMINMAX
 	#include <Windows.h>
 	#pragma comment(lib, "advapi32.lib")
+	#pragma comment(lib, "oleaut32.lib")
+	#pragma comment(lib, "ole32.lib")
+	#pragma comment(lib, "shell32.lib")
 #endif
 
 namespace cbl
@@ -335,12 +338,12 @@ namespace cbl
 		start_info.hStdError = err[pipe_write] != INVALID_HANDLE_VALUE ? err[pipe_write] : GetStdHandle(STD_ERROR_HANDLE);
 		start_info.hStdOutput = out[pipe_write] != INVALID_HANDLE_VALUE ? out[pipe_write] : GetStdHandle(STD_OUTPUT_HANDLE);
 		start_info.hStdInput = in[pipe_read] != INVALID_HANDLE_VALUE ? in[pipe_write] : GetStdHandle(STD_INPUT_HANDLE);
-		start_info.dwFlags |= STARTF_USESTDHANDLES;
+		start_info.dwFlags = STARTF_USESTDHANDLES;
 
 		char cwd[260];
 		GetCurrentDirectoryA(sizeof(cwd), cwd);
 
-		if (!CreateProcessA(nullptr, const_cast<LPSTR>(commandline), nullptr, nullptr, FALSE, 0, environment, cwd, &start_info, &proc_info))
+		if (!CreateProcessA(nullptr, const_cast<LPSTR>(commandline), nullptr, nullptr, TRUE, 0, environment, cwd, &start_info, &proc_info))
 		{
 			DWORD error = GetLastError();
 			char buffer[256];
@@ -397,7 +400,7 @@ namespace cbl
 					buffer.resize(available);
 					if (ReadFile(pipe[pipe_read], buffer.data(), available, &read, nullptr))
 					{
-						cb(buffer.data(), buffer.size());
+						cb(buffer.data(), read);
 					}
 				}
 			}
@@ -408,7 +411,11 @@ namespace cbl
 		size_t handle_count = 1;
 		HANDLE handles[1 + 2];
 		handles[0] = handle;
-		auto collect_pipe = [&](HANDLE pipe[2]) { if (out[pipe_read] != INVALID_HANDLE_VALUE) { handles[handle_count++] = out[pipe_read]; } };
+		auto collect_pipe = [&handles, &handle_count](HANDLE pipe[2])
+		{
+			if (INVALID_HANDLE_VALUE != pipe[pipe_read])
+				handles[handle_count++] = pipe[pipe_read];
+		};
 		collect_pipe(out);
 		collect_pipe(err);
 
@@ -421,9 +428,14 @@ namespace cbl
 			read_pipe_to_callback(out, buffer, on_out);
 		} while (result != WAIT_OBJECT_0 && result != WAIT_FAILED);
 		GetExitCodeProcess(handle, (LPDWORD)(&exit_code));
-			
-		read_pipe_to_callback(err, buffer, on_err);
-		read_pipe_to_callback(out, buffer, on_out);
+		
+		// Make sure to drain the pipes.
+		if (handle_count > 1)
+		{
+			WaitForMultipleObjects(handle_count - 1, handles + 1, TRUE, INFINITE);
+			read_pipe_to_callback(err, buffer, on_err);
+			read_pipe_to_callback(out, buffer, on_out);
+		}
 
 		CloseHandle(handle);
 		auto safe_close_handles = [](HANDLE h[2])
@@ -613,6 +625,17 @@ namespace cbl
 				return false;
 			}
 			
+		}
+
+		bool wide_str_to_ansi_str(std::string& ansi, wchar_t *wide)
+		{
+			ansi.resize(wcslen(wide) + 1);
+			if (int written = WideCharToMultiByte(CP_ACP, 0, wide, -1, (LPSTR)ansi.data(), ansi.size(), nullptr, nullptr))
+			{
+				ansi.resize(written - 1);
+				return true;
+			}
+			return false;
 		}
 	}
 }

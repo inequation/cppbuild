@@ -321,12 +321,7 @@ namespace detail
 
 void print_version()
 {
-	cbl::info("cppbuild version %d.%d.%d (%s generation, " __DATE__ ", " __TIME__ ")",
-		cppbuild_version.number.major,
-		cppbuild_version.number.minor,
-		cppbuild_version.number.patch,
-		cppbuild_version.self_hosted ? "2nd+" : "1st"
-	);
+	cbl::info("cppbuild version %s (" __DATE__ ", " __TIME__ ")", cppbuild_version.to_string().c_str());
 }
 
 int main(int argc, char *argv[])
