@@ -74,11 +74,16 @@ namespace std
 	};
 }
 
+#ifndef CPPBUILD_GENERATION
+	#define CPPBUILD_GENERATION	0
+#endif
+#define CPPBUILD_STRINGIFY(x)	CPPBUILD_STRINGIFY2(x)
+#define CPPBUILD_STRINGIFY2(x)	#x
 constexpr cbl::version cppbuild_version = { 0, 0, 0, 0,
-#if CPPBUILD_SELF_HOSTED
-		"2nd+ gen"
+#if CPPBUILD_GENERATION
+		"gen" CPPBUILD_STRINGIFY(CPPBUILD_GENERATION)
 #else
-		"1st gen"
+		"gen1"
 #endif
 };
 

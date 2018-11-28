@@ -204,8 +204,8 @@ namespace detail
 		configuration cfg;
 		cfg = base_configurations::debug(cbl::get_host_platform());
 		cfg.additional_include_directories.push_back("cppbuild");
-		cfg.definitions.push_back(std::make_pair("CPPBUILD_SELF_HOSTED", "1"));
-		cfg.additional_toolchain_options["msvc link"] = cbl::vwrap("/link /SUBSYSTEM:CONSOLE");
+		cfg.definitions.push_back(std::make_pair("CPPBUILD_GENERATION", std::to_string(CPPBUILD_GENERATION == 0 ? 2 : (CPPBUILD_GENERATION + 1))));
+		cfg.additional_toolchain_options["msvc link"] = cbl::vwrap("/SUBSYSTEM:CONSOLE");
 
 		return std::make_pair(
 			std::make_pair(cppbuild, target),
@@ -220,7 +220,7 @@ namespace detail
 		auto bootstrap = describe_bootstrap_target(toolchains);
 
 		auto build = setup_build(bootstrap.first, bootstrap.second, toolchains);
-#if CPPBUILD_SELF_HOSTED	// Only cull the build graph once we have successfully bootstrapped.
+#if CPPBUILD_GENERATION > 0	// Only cull the build graph once we have successfully bootstrapped.
 		cull_build(build.first);
 #endif
 

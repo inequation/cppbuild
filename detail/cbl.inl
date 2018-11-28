@@ -132,6 +132,12 @@ namespace cbl
 			}
 		}
 
+		std::string join(const string_vector &elements)
+		{
+			const char glue[2] = { get_path_separator(), 0 };
+			return cbl::join(elements, glue);
+		}
+
 		const char *get_cppbuild_cache_path()
 		{
 			return "cppbuild-cache";
