@@ -198,7 +198,7 @@ namespace detail
 		target_data target;
 		target.output = cppbuild;
 		target.type = target_data::executable;
-		target.sources = fvwrap("cppbuild.cpp");
+		target.sources = fvwrap("build.cpp");
 		target.used_toolchain = cbl::get_default_toolchain_for_host();
 
 		configuration cfg;

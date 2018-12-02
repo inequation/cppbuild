@@ -20,15 +20,15 @@ Will it be any faster than the existing systems? Or even reliable? Heck if I kno
 
 C++ compiles to native executables. It stands to reason that in order to achieve reasonable usability, bootstrapping the build system executable must be a trivial step. Once that is complete, we can use the full power of expression of C++ to self-host ourselves.
 
-Therefore, it is my goal to be able to bootstrap a first-generation `cppbuild`/`cppbuild.exe` binary with a trivial compiler invocation, such as this:
+Therefore, it is my goal to be able to bootstrap a first-generation `build`/`build.exe` binary with a trivial compiler invocation, such as this:
 ```
-$ g++ -o cppbuild cppbuild.cpp && ./cppbuild
+$ g++ -o build build.cpp && ./build
 ```
 Or this, on Windows, in a Visual Studio Developer Command Prompt:
 ```
-cl.exe cppbuild.cpp && cppbuild.exe
+cl.exe build.cpp && build.exe
 ```
-The invocation of `cppbuild`/`cppbuild.exe` will then build a second-generation *cppbuild* binary that has all the bells and whistles.
+The invocation of `build`/`build.exe` will then build a second-generation *cppbuild* binary that has all the bells and whistles.
 
 # Getting started
 
@@ -36,9 +36,9 @@ I'm sorry, you've showed up a bit early! I've got an example project cooking up,
 
 However, to give an idea of what I have in my mind - the mock steps would be as follows:
 1. Open a shell in your project's directory and `git submodule add git@github.com:inequation/cppbuild.git`.
-2. Copy `cppbuild/cppbuild.example.cpp` to your project directory and rename it to `cppbuild.cpp`. It's the functional equivalent of a makefile in *cppbuild*.
+2. Copy `cppbuild/build.example.cpp` to your project directory and rename it to `build.cpp`. It's the functional equivalent of a makefile in *cppbuild*.
 3. Customize the `describe()` function body inside that file.
 4. Bootstrap *cppbuild* using one of the command lines:
-   `$ g++ -o cppbuild cppbuild.cpp && ./cppbuild` on Unices, or
-   `cl.exe /Fecppbuild.exe /Zi cppbuild.cpp && cppbuild.exe` on Windows.
-5. Get to work on your project. Edit `cppbuild.cpp` to your heart's content. Run `cppbuild <target> [options]` to build your project. *cppbuild* will rebuild itself automatically and seamlessly as needed.
+   `$ g++ -o build build.cpp && ./build` on Unices, or
+   `cl.exe /Febuild.exe /Zi build.cpp && build.exe` on Windows.
+5. Get to work on your project. Edit `build.cpp` to your heart's content. Run `build <target> [options]` to build your project. *cppbuild* will rebuild itself automatically and seamlessly as needed.
