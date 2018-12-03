@@ -109,8 +109,9 @@ namespace cbl
 	};
 
 	constexpr platform get_host_platform();
+	constexpr const char *get_host_platform_str();
 
-	constexpr const char* get_default_toolchain_for_host();
+	constexpr const char *get_default_toolchain_for_host();
 
 	enum class severity : uint8_t
 	{

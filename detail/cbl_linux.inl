@@ -31,6 +31,11 @@ namespace cbl
 		return platform::linux64;
 	}
 
+	constexpr const char *get_host_platform_str()
+	{
+		return "linux64";
+	}
+
 	namespace path
 	{
 		constexpr const char get_path_separator() { return '/'; }

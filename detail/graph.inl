@@ -263,8 +263,9 @@ namespace graph
 			magic m = cache_magic;
 			if (1 == serializer(&m, sizeof(m), 1, stream) && m.i == cache_magic.i)
 			{
-				uint32_t v = cache_version;
-				if (1 == serializer(&v, sizeof(v), 1, stream) && v == cache_version)
+				const uint64_t expected_version = ((uint64_t)cache_version << 32) | (uint64_t)cbl::get_host_platform();
+				uint64_t v = expected_version;
+				if (1 == serializer(&v, sizeof(v), 1, stream) && v == expected_version)
 				{
 					uint32_t length;
 					auto key_it = cache.begin();
@@ -338,10 +339,17 @@ namespace graph
 						cbl::log(cbl::severity::verbose, "[CacheSer] Failed to read cache key count");
 				}
 				else
-					cbl::log(cbl::severity::verbose, "[CacheSer] Version number mismatch (expected %d, got %d)", v, cache_version);
+					cbl::log(cbl::severity::verbose, "[CacheSer] Version number mismatch (expected %d, got %d)", cache_version, v);
 			}
 			else
-				cbl::log(cbl::severity::verbose, "[CacheSer] Magic number mismatch (expected %08X, got %08X)", m.i, cache_magic.i);
+				cbl::log(cbl::severity::verbose, "[CacheSer] Magic number mismatch (expected %08X, got %08X)", cache_magic.i, m.i);
+		}
+
+		std::string get_cache_path()
+		{
+			using namespace cbl;
+			using namespace cbl::path;
+			return join(get_cppbuild_cache_path(), join(get_host_platform_str(), "timestamps.bin"));
 		}
 
 		timestamp_cache& get_cache()
@@ -356,7 +364,7 @@ namespace graph
 				if (!cache)
 				{
 					cache = new timestamp_cache;
-					std::string cache_path = path::join(path::get_cppbuild_cache_path(), "timestamps.bin");
+					std::string cache_path = get_cache_path();
 					if (FILE *serialized = fopen(cache_path.c_str(), "rb"))
 					{
 						detail::serialize_cache_items<fread, nullptr>(*cache, serialized);
@@ -377,7 +385,7 @@ namespace graph
 		using namespace cbl;
 
 		auto& cache = detail::get_cache();
-		std::string cache_path = path::join(path::get_cppbuild_cache_path(), "timestamps.bin");
+		std::string cache_path = detail::get_cache_path();
 		if (FILE *serialized = fopen(cache_path.c_str(), "wb"))
 		{
 			

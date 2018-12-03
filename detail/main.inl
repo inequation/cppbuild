@@ -231,7 +231,7 @@ namespace detail
 
 			// Now here comes the hack: we rename the output of the root node *only after the culling*.
 			// I.e. cull based on main cppbuild executable's timestamp, but output to a file named differently.
-			std::string new_cppbuild = path::join(staging_dir, "cppbuild-");
+			std::string new_cppbuild = path::join(staging_dir, "build-");
 			new_cppbuild += std::to_string(process::get_current_pid());
 #if defined(_WIN64)
 			new_cppbuild += ".exe";
@@ -268,7 +268,7 @@ namespace detail
 		else
 		{
 			info("cppbuild executable up to date");
-			auto old_copies = cbl::fs::enumerate_files(cbl::path::join(staging_dir, "cppbuild-*").c_str());
+			auto old_copies = cbl::fs::enumerate_files(cbl::path::join(staging_dir, "build-*").c_str());
 			for (auto& o : old_copies)
 			{
 				cbl::fs::delete_file(o.c_str());
