@@ -17,7 +17,7 @@ enum class platform
 
 struct configuration
 {
-	platform platform;
+	::platform platform;
 
 	bool emit_debug_information;
 	enum
@@ -129,7 +129,7 @@ namespace graph
 			include,							// Included file that does not get directly compiled as a TU, but influences the output. Cannot have further inputs, nested includes are listed as inputs to the TU that includes them.
 			generate							// Generated source, e.g. by means of MOC in Qt-based projects. May have inputs (i.e. source files for the generator); generated files with no inputs will be treated as always out of date.
 		};
-		static_assert(generate < action::cpp_actions_end, "Action type range overflow; increase action::cpp_actions_end");
+		static_assert((action::action_type)generate < action::cpp_actions_end, "Action type range overflow; increase action::cpp_actions_end");
 
 		bool are_dependencies_met() override;
 	};
@@ -137,7 +137,8 @@ namespace graph
 	using dependency_timestamp_vector = std::vector<std::pair<std::string, uint64_t>>;
 	using timestamp_cache = std::unordered_map<std::string, dependency_timestamp_vector>;
 	using timestamp_cache_entry = timestamp_cache::value_type;
-	timestamp_cache& get_timestamp_cache();
+	bool query_dependency_cache(const std::string& source, std::function<void(const std::string &)> push_dep);
+	void insert_dependency_cache(const std::string& source, const dependency_timestamp_vector &deps);
 
 	std::shared_ptr<action> generate_cpp_build_graph(const target& target, const configuration& c, std::shared_ptr<struct toolchain> tc);
 	void cull_build_graph(std::shared_ptr<action>& root);

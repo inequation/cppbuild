@@ -9,6 +9,7 @@
 	#define WIN32_LEAN_AND_MEAN
 	#define NOMINMAX
 	#include <Windows.h>
+	#include <io.h>
 	#pragma comment(lib, "advapi32.lib")
 	#pragma comment(lib, "oleaut32.lib")
 	#pragma comment(lib, "ole32.lib")
@@ -271,6 +272,14 @@ namespace cbl
 			{
 				cbl::warning("Failed to delete file %s", path);
 				return true;
+			}
+		}
+
+		void disinherit_stream(FILE *stream)
+		{
+			if (HANDLE h = (HANDLE)_get_osfhandle(_fileno(stream)))
+			{
+				SetHandleInformation(h, HANDLE_FLAG_INHERIT, 0);
 			}
 		}
 	}

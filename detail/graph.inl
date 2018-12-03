@@ -116,7 +116,7 @@ namespace graph
 				string_vector inputs;
 				for (auto i : root->inputs)
 				{
-					assert(i->type == cpp_action::compile);
+					assert(i->type == (action::action_type)cpp_action::compile);
 					inputs.insert(inputs.begin(), i->outputs.begin(), i->outputs.end());
 				}
 				if (auto p = tc->invoke_linker(target, inputs, cfg, on_stderr, on_stdout))
@@ -139,7 +139,7 @@ namespace graph
 				assert(root->inputs.size() == 1);
 				auto i = root->inputs[0];
 				assert(i->outputs.size() == 1);
-				assert(i->type == cpp_action::source);
+				assert(i->type == (action::action_type)cpp_action::source);
 				if (auto p = tc->invoke_compiler(target, root->outputs[0], i->outputs[0], cfg, on_stderr, on_stdout))
 				{
 					int exit_code = p->wait();
@@ -178,7 +178,7 @@ namespace graph
 			// Empty graph, nothing to clean.
 			return;
 		}
-		if (root->type != cpp_action::include)
+		if (root->type != (action::action_type)cpp_action::include)
 		{
 			for (auto& o : root->outputs)
 			{
@@ -251,6 +251,11 @@ namespace graph
 		static constexpr uint32_t cache_version = 0;
 
 		typedef size_t(*serializer)(void *ptr, size_t size, size_t nmemb, FILE *stream);
+
+		inline size_t fwrite_wrapper(void *ptr, size_t size, size_t nmemb, FILE *stream)
+		{
+			return fwrite(const_cast<void*>(ptr), size, nmemb, stream);
+		};
 
 		template <serializer serializer, void(* on_success)(const char *key, const char *path, uint64_t stamp) = nullptr>
 		void serialize_cache_items(timestamp_cache& cache, FILE *stream)
@@ -338,49 +343,95 @@ namespace graph
 			else
 				cbl::log(cbl::severity::verbose, "[CacheSer] Magic number mismatch (expected %08X, got %08X)", m.i, cache_magic.i);
 		}
-	};
 
-	timestamp_cache& get_timestamp_cache()
-	{
-		using namespace cbl;
-
-		static timestamp_cache *cache = nullptr;
-		if (!cache)
+		timestamp_cache& get_cache()
 		{
-			static std::mutex m;
-			std::lock_guard<std::mutex> _(m);
+			using namespace cbl;
+
+			static timestamp_cache *cache = nullptr;
 			if (!cache)
 			{
-				cache = new timestamp_cache;
-				std::string cache_path = path::join(path::get_cppbuild_cache_path(), "timestamps.bin");
-				if (FILE *serialized = fopen(cache_path.c_str(), "rb"))
+				static std::mutex m;
+				std::lock_guard<std::mutex> _(m);
+				if (!cache)
 				{
-					detail::serialize_cache_items<fread, nullptr>(*cache, serialized);
-					fclose(serialized);
+					cache = new timestamp_cache;
+					std::string cache_path = path::join(path::get_cppbuild_cache_path(), "timestamps.bin");
+					if (FILE *serialized = fopen(cache_path.c_str(), "rb"))
+					{
+						detail::serialize_cache_items<fread, nullptr>(*cache, serialized);
+						fclose(serialized);
+					}
+					else
+					{
+						log(severity::verbose, "Failed to open timestamp cache for reading from %s, using a blank slate", cache_path.c_str());
+					}
 				}
-				else
-				{
-					log(severity::verbose, "Failed to open timestamp cache for reading from %s, using a blank slate", cache_path.c_str());
-				}
-			}	
+			}
+			return *cache;
 		}
-		return *cache;
-	}
+	};
 
 	void save_timestamp_cache()
 	{
 		using namespace cbl;
 
-		auto& cache = get_timestamp_cache();
+		auto& cache = detail::get_cache();
 		std::string cache_path = path::join(path::get_cppbuild_cache_path(), "timestamps.bin");
 		if (FILE *serialized = fopen(cache_path.c_str(), "wb"))
 		{
-			detail::serialize_cache_items<(detail::serializer)fwrite, nullptr>(cache, serialized);
+			
+			detail::serialize_cache_items<detail::fwrite_wrapper, nullptr>(cache, serialized);
 			fclose(serialized);
 		}
 		else
 		{
 			log(severity::verbose, "Failed to open timestamp cache for writing to %s", cache_path.c_str());
 		}
+	}
+
+	bool query_dependency_cache(const std::string& source, std::function<void(const std::string &)> push_dep)
+	{
+		auto& cache = detail::get_cache();
+
+		auto it = cache.find(source);
+		if (it != cache.end())
+		{
+			cbl::time::scoped_timer("Timestamp cache query", cbl::severity::verbose);
+			bool up_to_date = true;
+			for (const auto &entry : it->second)
+			{
+				uint64_t stamp = cbl::fs::get_modification_timestamp(entry.first.c_str());
+				if (stamp == 0 || stamp != entry.second)
+				{
+					up_to_date = false;
+					break;
+				}
+			}
+			if (up_to_date)
+			{
+				for (const auto &entry : it->second)
+				{
+					push_dep(entry.first);
+				}
+				cbl::log(cbl::severity::verbose, "Timestamp cache HIT for TU %s", source.c_str());
+				return true;
+			}
+			else
+			{
+				cache.erase(it);
+				cbl::log(cbl::severity::verbose, "Timestamp cache STALE for TU %s, discarded", source.c_str());
+				return false;
+			}
+		}
+		cbl::log(cbl::severity::verbose, "Timestamp cache MISS for TU %s", source.c_str());
+		return false;
+	}
+
+	void insert_dependency_cache(const std::string& source, const graph::dependency_timestamp_vector &deps)
+	{
+		auto& cache = detail::get_cache();
+
+		cache[source] = deps;
 	}
 };

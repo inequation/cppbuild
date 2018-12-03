@@ -3,11 +3,14 @@
 // Includes here are for the benefit of syntax highlighting systems, #pragma once prevents recursion.
 #include "../cppbuild.h"
 
+#include <cstdarg>
 #include <cctype>
 #include "../cbl.h"
 
 #if defined(_WIN64)
 	#include "cbl_win64.inl"
+#elif defined(__linux__)
+	#include "cbl_linux.inl"
 #else
 	#error Unsupported platform
 #endif
@@ -231,61 +234,70 @@ namespace cbl
 				}
 			}
 			log_file_stream = fopen(log.c_str(), "w");
+			// Make sure that handle inheritance doesn't block log rotation.
+			cbl::fs::disinherit_stream(log_file_stream);
 			atexit([]() { fclose(log_file_stream); });
 		}
 
 		void log(severity severity, const char *fmt, va_list va)
 		{
-			static thread_local char static_buf[1024];
 			if (log_level <= severity)
 			{
 				rotate_logs();
 
+#if defined(_GNU_SOURCE)
+				char *buffer = nullptr;
+				vasprintf(&buffer, fmt, va);
+#else
 				int required = vsnprintf(nullptr, 0, fmt, va);
-				if (required > 0)
+				if (required <= 0)
+					return;	// Nothing to do here.
+
+				static thread_local char static_buf[1024];
+				char *buffer = required + 1 <= sizeof(static_buf)
+					? static_buf
+					: new char[required + 1];
+				vsnprintf(buffer, required, fmt, va);
+				buffer[required] = 0;	
+#endif
+				FILE *output_stream = nullptr;
+				switch (severity)
 				{
-					required += 1;
-					char *buffer = required + 1 <= sizeof(static_buf)
-						? static_buf
-						: new char[required + 1];
-					vsnprintf(buffer, required, fmt, va);
-					buffer[required - 1] = '\n';
-					buffer[required] = 0;
-					FILE *output_stream = nullptr;
-					switch (severity)
-					{
-					case severity::warning:
-					case severity::error:
-						output_stream = stderr;
-						break;
-					default:
-						output_stream = stdout;
-						break;
-					}
-					static constexpr const char *severity_tags[] =
-					{
-						"[Verbose]",
-						"[Info]",
-						"[Warning]",
-						"[Error]"
-					};
-					int h, m, s, us;
-					time::of_day(time::now(), nullptr, nullptr, nullptr, &h, &m, &s, &us);
-					auto emit = [&](FILE *stream)
-					{
-						fprintf(stream, "[%02d:%02d:%02d.%03d]%s ", h, m, s, us / 1000, severity_tags[(int)severity]);
-						fputs(buffer, stream);
-					};
-					emit(output_stream);
-					if (log_file_stream)
-					{
-						emit(log_file_stream);
-					}
-					if (buffer != static_buf)
-					{
-						delete[] buffer;
-					}
+				case severity::warning:
+				case severity::error:
+					output_stream = stderr;
+					break;
+				default:
+					output_stream = stdout;
+					break;
 				}
+				static constexpr const char *severity_tags[] =
+				{
+					"[Verbose]",
+					"[Info]",
+					"[Warning]",
+					"[Error]"
+				};
+				int h, m, s, us;
+				time::of_day(time::now(), nullptr, nullptr, nullptr, &h, &m, &s, &us);
+				auto emit = [&](FILE *stream)
+				{
+					fprintf(stream, "[%02d:%02d:%02d.%03d]%s ", h, m, s, us / 1000, severity_tags[(int)severity]);
+					fputs(buffer, stream);
+					fputc('\n', stream);
+				};
+				emit(output_stream);
+				if (log_file_stream)
+				{
+					emit(log_file_stream);
+				}
+#if defined(_GNU_SOURCE)
+				if (buffer)
+					free(buffer);
+#else
+				if (buffer != static_buf)
+					delete[] buffer;
+#endif
 			}
 		}
 	}
@@ -293,7 +305,7 @@ namespace cbl
 	void log(severity s, const char *fmt, ...)
 	{
 		va_list va;
-		va_start(va, &fmt);
+		va_start(va, fmt);
 		detail::log(s, fmt, va);
 		va_end(va);
 	}
@@ -301,7 +313,7 @@ namespace cbl
 	void info(const char *fmt, ...)
 	{
 		va_list va;
-		va_start(va, &fmt);
+		va_start(va, fmt);
 		detail::log(severity::info, fmt, va);
 		va_end(va);
 	}
@@ -309,7 +321,7 @@ namespace cbl
 	void warning(const char *fmt, ...)
 	{
 		va_list va;
-		va_start(va, &fmt);
+		va_start(va, fmt);
 		detail::log(severity::warning, fmt, va);
 		va_end(va);
 	}
@@ -317,7 +329,7 @@ namespace cbl
 	void error(const char *fmt, ...)
 	{
 		va_list va;
-		va_start(va, &fmt);
+		va_start(va, fmt);
 		detail::log(severity::error, fmt, va);
 		va_end(va);
 	}

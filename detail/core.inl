@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cassert>
 #include <ctime>
+#include <cstring>
 
 typedef std::vector<std::string> string_vector;
 
@@ -24,9 +25,9 @@ namespace cbl
 		bool operator<(const version& other) const
 		{
 			return major < other.major || (major == other.major &&
-					minor < other.minor || (minor == other.minor &&
-						build < other.build || (build == other.build &&
-							revision < other.revision)));
+					(minor < other.minor || (minor == other.minor &&
+						(build < other.build || (build == other.build &&
+							revision < other.revision)))));
 		}
 		bool parse(const char *str)
 		{

@@ -136,37 +136,8 @@ struct msvc : public toolchain
 			inputs.push_back(dep_action);
 		};
 
-		auto& cache = graph::get_timestamp_cache();
-
-		auto it = cache.find(source);
-		if (it != cache.end())
-		{
-			cbl::time::scoped_timer("Timestamp cache query", cbl::severity::verbose);
-			bool up_to_date = true;
-			for (const auto &entry : it->second)
-			{
-				uint64_t stamp = cbl::fs::get_modification_timestamp(entry.first.c_str());
-				if (stamp == 0 || stamp != entry.second)
-				{
-					up_to_date = false;
-					break;
-				}
-			}
-			if (up_to_date)
-			{
-				for (const auto &entry : it->second)
-				{
-					push_dep(entry.first);
-				}
-				cbl::log(cbl::severity::verbose, "Timestamp cache HIT for TU %s", source.c_str());
-				return;
-			}
-			else
-			{
-				cache.erase(it);
-				cbl::log(cbl::severity::verbose, "Timestamp cache STALE for TU %s, discarded", source.c_str());
-			}
-		}
+		if (graph::query_dependency_cache(source, push_dep))
+			return;
 
 		std::string cmdline = generate_cl_commandline_shared(target, cfg, false);
 		cmdline += " /c /showIncludes /P /FiNUL";
@@ -176,8 +147,7 @@ struct msvc : public toolchain
 			buffer.insert(buffer.end(), (uint8_t*)data, (uint8_t*)data + byte_count);
 		};
 		cmdline += " " + source;
-		// Documentation says "The /showIncludes option emits to stderr, not stdout", but that seems to be a lie.
-		// TODO: Cache!!! This doesn't need to run every single invocation!
+		
 		auto p = cbl::process::start_async(cmdline.c_str(), append_to_buffer, append_to_buffer);
 		if (p && 0 == p->wait())
 		{
@@ -212,7 +182,7 @@ struct msvc : public toolchain
 				}
 				deps.push_back(std::make_pair(i->outputs[0], i->output_timestamps[0]));
 			}
-			cache[source] = deps;
+			graph::insert_dependency_cache(source, deps);
 		}
 
 		graph::save_timestamp_cache();
