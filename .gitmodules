@@ -1,0 +1,3 @@
+[submodule "detail/taskpp11"]
+	path = detail/taskpp11
+	url = git@github.com:inequation/taskpp11.git
