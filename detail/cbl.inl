@@ -5,6 +5,7 @@
 
 #include <cstdarg>
 #include <cctype>
+#include <sstream>
 #include "../cbl.h"
 
 #if defined(_WIN64)
@@ -245,6 +246,12 @@ namespace cbl
 			{
 				rotate_logs();
 
+				static std::mutex mutex;
+				std::lock_guard<std::mutex> _(mutex);
+
+				std::ostringstream thread_id;
+				thread_id << std::this_thread::get_id();
+
 #if defined(_GNU_SOURCE)
 				char *buffer = nullptr;
 				vasprintf(&buffer, fmt, va);
@@ -253,12 +260,13 @@ namespace cbl
 				if (required <= 0)
 					return;	// Nothing to do here.
 
+				++required;	// Allocate the null terminator.
 				static thread_local char static_buf[1024];
-				char *buffer = required + 1 <= sizeof(static_buf)
+				char *buffer = required <= sizeof(static_buf)
 					? static_buf
-					: new char[required + 1];
+					: new char[required];
 				vsnprintf(buffer, required, fmt, va);
-				buffer[required] = 0;	
+				buffer[required - 1] = 0;
 #endif
 				FILE *output_stream = nullptr;
 				switch (severity)
@@ -282,7 +290,8 @@ namespace cbl
 				time::of_day(time::now(), nullptr, nullptr, nullptr, &h, &m, &s, &us);
 				auto emit = [&](FILE *stream)
 				{
-					fprintf(stream, "[%02d:%02d:%02d.%03d]%s ", h, m, s, us / 1000, severity_tags[(int)severity]);
+					fprintf(stream, "[%02d:%02d:%02d.%03d][Thread %s]%s ", h, m, s, us / 1000,
+						thread_id.str().c_str(), severity_tags[(int)severity]);
 					fputs(buffer, stream);
 					fputc('\n', stream);
 				};
