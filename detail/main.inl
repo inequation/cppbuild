@@ -189,7 +189,7 @@ namespace detail
 	{
 		using namespace cbl;
 
-		constexpr char cppbuild[] = "cppbuild"
+		constexpr char cppbuild[] = "build"
 #if defined(_WIN64)
 			".exe"
 #endif
@@ -257,7 +257,7 @@ namespace detail
 				auto p = cbl::process::start_async(cmdline.c_str());
 				if (!p)
 				{
-					error("FATAL: Failed to bootstrap cppbuild");
+					error("FATAL: Failed to bootstrap cppbuild, command line %s", cmdline.c_str());
 					abort();
 				}
 				p->detach();
