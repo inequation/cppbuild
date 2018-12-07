@@ -203,7 +203,8 @@ namespace cbl
 
 	namespace detail
 	{
-		static constexpr severity log_level = severity::verbose;	// FIXME: Put in config.
+		static constexpr severity compiled_log_level = severity::verbose;	// FIXME: Put in config.
+		static severity runtime_log_level = severity::verbose;	// FIXME: Put in config.
 
 		static FILE *log_file_stream;
 
@@ -242,9 +243,10 @@ namespace cbl
 			atexit([]() { fclose(log_file_stream); });
 		}
 
-		void log(severity severity, const char *fmt, va_list va)
+		template<severity severity>
+		void log(const char *fmt, va_list va)
 		{
-			if (log_level <= severity)
+			if (compiled_log_level <= severity && runtime_log_level <= severity)
 			{
 				rotate_logs();
 
@@ -313,11 +315,20 @@ namespace cbl
 		}
 	}
 
-	void log(severity s, const char *fmt, ...)
+	template <severity s>
+	void log(const char *fmt, ...)
 	{
 		va_list va;
 		va_start(va, fmt);
-		detail::log(s, fmt, va);
+		detail::log<s>( fmt, va);
+		va_end(va);
+	}
+
+	void log_verbose(const char *fmt, ...)
+	{
+		va_list va;
+		va_start(va, fmt);
+		detail::log<severity::verbose>(fmt, va);
 		va_end(va);
 	}
 
@@ -325,7 +336,7 @@ namespace cbl
 	{
 		va_list va;
 		va_start(va, fmt);
-		detail::log(severity::info, fmt, va);
+		detail::log<severity::info>(fmt, va);
 		va_end(va);
 	}
 
@@ -333,7 +344,7 @@ namespace cbl
 	{
 		va_list va;
 		va_start(va, fmt);
-		detail::log(severity::warning, fmt, va);
+		detail::log<severity::warning>(fmt, va);
 		va_end(va);
 	}
 
@@ -341,7 +352,7 @@ namespace cbl
 	{
 		va_list va;
 		va_start(va, fmt);
-		detail::log(severity::error, fmt, va);
+		detail::log<severity::error>(fmt, va);
 		va_end(va);
 	}
 
@@ -352,13 +363,29 @@ namespace cbl
 			, label(in_label)
 			, s(severity)
 		{
-			log(s, "[Start] %s", label);
+			static constexpr const char fmt[] = "[Start] %s";
+			switch (severity)
+			{
+			case severity::error: error(fmt, label); return;
+			case severity::warning: warning(fmt, label); return;
+			case severity::info: info(fmt, label); return;
+			case severity::verbose: log_verbose(fmt, label); return;
+			default: assert(!"Unknown severity"); info(fmt, label); return;
+			}
 		}
 
 		scoped_timer::~scoped_timer()
 		{
 			uint64_t duration = duration_usec(start, now());
-			log(s, "[End  ] %s: %3.4fs", label, float(duration) * 0.000001f);
+			static constexpr const char fmt[] = "[End  ] %s: %3.4fs";
+			switch (s)
+			{
+			case severity::error: error(fmt, label, float(duration) * 0.000001f); return;
+			case severity::warning: warning(fmt, label, float(duration) * 0.000001f); return;
+			case severity::info: info(fmt, label, float(duration) * 0.000001f); return;
+			case severity::verbose: log_verbose(fmt, label, float(duration) * 0.000001f); return;
+			default: assert(!"Unknown severity"); info(fmt, label, float(duration) * 0.000001f); return;
+			}
 		}
 	}
 };

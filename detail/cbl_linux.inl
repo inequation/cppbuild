@@ -266,14 +266,14 @@ namespace cbl
 		{
 			if (unlink(path) == 0)
 			{
-				cbl::log(cbl::severity::verbose, "Deleted file %s", path);
+				cbl::log_verbose("Deleted file %s", path);
 				return true;
 			}
 			else
 			{
 				int error = errno;
 				cbl::warning("Failed to delete file %s", path);
-				cbl::log(cbl::severity::verbose, "Reason: %s", strerror(error));
+				cbl::log_verbose("Reason: %s", strerror(error));
 				return true;
 			}
 			return false;
@@ -388,7 +388,7 @@ namespace cbl
 
 		posix_spawnattr_destroy(&attr);
 
-		cbl::log(cbl::severity::verbose, "Launched process #%d: %s", child_pid, commandline);
+		cbl::log_verbose("Launched process #%d: %s", child_pid, commandline);
 
 		if (stdin_buffer)
 			write(in[pipe_write], stdin_buffer->data(), stdin_buffer->size());
@@ -475,7 +475,7 @@ namespace cbl
 
 	void process::detach()
 	{
-		cbl::log(cbl::severity::verbose, "Detaching process handle #%d", (uintptr_t)handle);
+		cbl::log_verbose("Detaching process handle #%d", (uintptr_t)handle);
 		handle = (void *)-1;
 		auto safe_close_pipes = [](void *p[2])
 		{
@@ -534,7 +534,7 @@ namespace cbl
 			if (error == ECHILD)
 			{
 				// FIXME: Polling sucks, there must be an event to listen to.
-				cbl::log(cbl::severity::verbose, "Pid %d isn't a child, falling back to procfs polling");
+				cbl::log_verbose("Pid %d isn't a child, falling back to procfs polling");
 				std::string proc_path("/proc/" + std::to_string(pid));
 				while (access(proc_path.c_str(), F_OK) == 0)
 				{
@@ -546,7 +546,7 @@ namespace cbl
 				}
 			}
 			else
-				cbl::log(cbl::severity::verbose, "Waiting for pid %d failed; wstatus : %X, reason: %s", pid, wstatus, strerror(error));
+				cbl::log_verbose("Waiting for pid %d failed; wstatus : %X, reason: %s", pid, wstatus, strerror(error));
 		}
 	}
 }

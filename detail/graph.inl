@@ -320,29 +320,29 @@ namespace graph
 													on_success(key.c_str(), vec[i].first.c_str(), vec[i].second);
 											}
 											else
-												cbl::log(cbl::severity::verbose, "[CacheSer] Failed to serialize value time stamp at index %d, key %s", i, key.c_str());
+												cbl::log_verbose("[CacheSer] Failed to serialize value time stamp at index %d, key %s", i, key.c_str());
 										}
 										else
-											cbl::log(cbl::severity::verbose, "[CacheSer] Failed to serialize value string at index %d, key %s", i, key.c_str());
+											cbl::log_verbose("[CacheSer] Failed to serialize value string at index %d, key %s", i, key.c_str());
 									}
 								}
 								else
-									cbl::log(cbl::severity::verbose, "[CacheSer] Failed to serialize value vector length for key %s", key.c_str());
+									cbl::log_verbose("[CacheSer] Failed to serialize value vector length for key %s", key.c_str());
 							}
 							else
-								cbl::log(cbl::severity::verbose, "[CacheSer] Failed to serialize key string");
+								cbl::log_verbose("[CacheSer] Failed to serialize key string");
 							if (key_count-- <= 1)
 								break;
 						} while (success);
 					}
 					else
-						cbl::log(cbl::severity::verbose, "[CacheSer] Failed to read cache key count");
+						cbl::log_verbose("[CacheSer] Failed to read cache key count");
 				}
 				else
-					cbl::log(cbl::severity::verbose, "[CacheSer] Version number mismatch (expected %d, got %d)", cache_version, v);
+					cbl::log_verbose("[CacheSer] Version number mismatch (expected %d, got %d)", cache_version, v);
 			}
 			else
-				cbl::log(cbl::severity::verbose, "[CacheSer] Magic number mismatch (expected %08X, got %08X)", cache_magic.i, m.i);
+				cbl::log_verbose("[CacheSer] Magic number mismatch (expected %08X, got %08X)", cache_magic.i, m.i);
 		}
 
 		std::string get_cache_path()
@@ -372,7 +372,7 @@ namespace graph
 					}
 					else
 					{
-						log(severity::verbose, "Failed to open timestamp cache for reading from %s, using a blank slate", cache_path.c_str());
+						log_verbose("Failed to open timestamp cache for reading from %s, using a blank slate", cache_path.c_str());
 					}
 				}
 			}
@@ -394,7 +394,7 @@ namespace graph
 		}
 		else
 		{
-			log(severity::verbose, "Failed to open timestamp cache for writing to %s", cache_path.c_str());
+			log_verbose("Failed to open timestamp cache for writing to %s", cache_path.c_str());
 		}
 	}
 
@@ -422,17 +422,17 @@ namespace graph
 				{
 					push_dep(entry.first);
 				}
-				cbl::log(cbl::severity::verbose, "Timestamp cache HIT for TU %s", source.c_str());
+				cbl::log_verbose("Timestamp cache HIT for TU %s", source.c_str());
 				return true;
 			}
 			else
 			{
 				cache.erase(it);
-				cbl::log(cbl::severity::verbose, "Timestamp cache STALE for TU %s, discarded", source.c_str());
+				cbl::log_verbose("Timestamp cache STALE for TU %s, discarded", source.c_str());
 				return false;
 			}
 		}
-		cbl::log(cbl::severity::verbose, "Timestamp cache MISS for TU %s", source.c_str());
+		cbl::log_verbose("Timestamp cache MISS for TU %s", source.c_str());
 		return false;
 	}
 

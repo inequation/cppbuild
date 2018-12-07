@@ -120,13 +120,16 @@ namespace cbl
 		warning,
 		error
 	};
-	void log(severity, const char *fmt, ...);
-	// Alias for log(info, ...).
+	template<severity>
+	void log(const char *fmt, ...);
+	// Alias for log<info>(...).
 	void info(const char* fmt, ...);
-	// Alias for log(warning, ...).
+	// Alias for log<warning>(...).
 	void warning(const char* fmt, ...);
-	// Alias for log(error, ...).
+	// Alias for log<error>(...).
 	void error(const char* fmt, ...);
+	// Alias for log<verbose>(...).
+	void log_verbose(const char* fmt, ...);
 
 	// Wraps a single string in a vector.
 	string_vector vwrap(const std::string& s);

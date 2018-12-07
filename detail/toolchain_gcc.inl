@@ -27,7 +27,7 @@ struct gcc : public toolchain
 		
 		if (compiler_dir.empty())
 		{
-			cbl::log(cbl::severity::error, "No compiler set. You might be able to compile code without Windows SDK, but not without a compiler.");
+			cbl::error("No compiler set. You might be able to compile code without the platform SDK, but not without a compiler.");
 			abort();
 		}
 	}

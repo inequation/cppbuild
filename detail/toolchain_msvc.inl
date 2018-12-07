@@ -65,7 +65,7 @@ struct msvc : public toolchain
 		
 		if (compiler_dir.empty())
 		{
-			cbl::log(cbl::severity::error, "No compiler set. You might be able to compile code without Windows SDK, but not without a compiler.");
+			cbl::error("No compiler set. You might be able to compile code without Windows SDK, but not without a compiler.");
 			abort();
 		}
 	}
@@ -240,7 +240,7 @@ protected:
 		{
 			if (0 != cbl::fs::get_modification_timestamp(path::join(install_dir, "Include\\um\\windows.h").c_str()))
 			{
-				log(severity::verbose, "Found Windows 8.1 SDK at %s", install_dir.c_str());
+				log_verbose("Found Windows 8.1 SDK at %s", install_dir.c_str());
 				auto &entry = sdk_dirs[{ 8, 1 }];
 				entry[0] = path::join(install_dir, "Include");
 				entry[1] = path::join(install_dir, "Lib\\winv6.3");	// NOTE: This is for SDK 8.1, 8.0 would have this as winv8.0.
@@ -273,7 +273,7 @@ protected:
 					{
 						if (0 != cbl::fs::get_modification_timestamp(path::join(base_dir, tested_file).c_str()))
 						{
-							log(severity::verbose, "Found %s %s at %s", name, number.to_string().c_str(), base_dir);
+							log_verbose("Found %s %s at %s", name, number.to_string().c_str(), base_dir);
 							auto &entry = dirs[number];
 							entry[0] = base_dir;
 
@@ -335,7 +335,7 @@ protected:
 				number = version{ 14, 0 };
 			if (number.major != 0)
 			{
-				log(severity::verbose, "Found Visual C %s compiler at %s", number.to_string().c_str(), install_dir.c_str());
+				log_verbose("Found Visual C %s compiler at %s", number.to_string().c_str(), install_dir.c_str());
 				compiler_dirs[number][0] = install_dir;
 			}
 		}
@@ -422,7 +422,7 @@ protected:
 											number = query_cl_exe_version(cl_exe.c_str());
 										if (number.major != 0)
 										{
-											log(severity::verbose, "Found Visual C %s compiler at %s", number.to_string().c_str(), cl_exe.c_str());
+											log_verbose("Found Visual C %s compiler at %s", number.to_string().c_str(), cl_exe.c_str());
 											compiler_dirs[number][0] = dir;
 										}
 									}

@@ -202,7 +202,7 @@ namespace cbl
 		{
 			if (CopyFileA(existing_path, new_path, (!!(flags & overwrite)) ? FALSE : TRUE))
 			{
-				cbl::log(cbl::severity::verbose, "Copied file %s to %s, copy flags 0x%X", existing_path, new_path, flags);
+				cbl::log_verbose("Copied file %s to %s, copy flags 0x%X", existing_path, new_path, flags);
 				if (!!(flags & maintain_timestamps))
 				{
 					HANDLE ef = CreateFileA(existing_path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -236,7 +236,7 @@ namespace cbl
 		{
 			if (MoveFileExA(existing_path, new_path, MOVEFILE_WRITE_THROUGH | MOVEFILE_COPY_ALLOWED | ((!!(flags & overwrite)) ? 0 : MOVEFILE_REPLACE_EXISTING)))
 			{
-				cbl::log(cbl::severity::verbose, "Moved file %s to %s, copy flags 0x%X", existing_path, new_path, flags);
+				cbl::log_verbose("Moved file %s to %s, copy flags 0x%X", existing_path, new_path, flags);
 				if (!!(flags & maintain_timestamps))
 				{
 					HANDLE ef = CreateFileA(existing_path, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr);
@@ -270,7 +270,7 @@ namespace cbl
 		{
 			if (DeleteFileA(path))
 			{
-				cbl::log(cbl::severity::verbose, "Deleted file %s", path);
+				cbl::log_verbose("Deleted file %s", path);
 				return true;
 			}
 			else
@@ -375,7 +375,7 @@ namespace cbl
 			return nullptr;
 		}
 
-		cbl::log(cbl::severity::verbose, "Launched process #%d, handle #%d: %s", proc_info.dwProcessId, (uintptr_t)proc_info.hProcess, commandline);
+		cbl::log_verbose("Launched process #%d, handle #%d: %s", proc_info.dwProcessId, (uintptr_t)proc_info.hProcess, commandline);
 
 		if (stdin_buffer)
 		{
@@ -467,7 +467,7 @@ namespace cbl
 
 	void process::detach()
 	{
-		cbl::log(cbl::severity::verbose, "Detaching process handle #%d", (uintptr_t)handle);
+		cbl::log_verbose("Detaching process handle #%d", (uintptr_t)handle);
 		CloseHandle(handle);
 		handle = INVALID_HANDLE_VALUE;
 		auto safe_close_handles = [](HANDLE h[2])
