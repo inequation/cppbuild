@@ -183,12 +183,7 @@ struct gcc : public toolchain
 			fs::copy_file(
 				existing_path,
 				new_path,
-				cbl::fs::overwrite | cbl::fs::maintain_timestamps) &&
-			fs::copy_file(
-				(path::get_path_without_extension(existing_path) + ".pdb").c_str(),
-				// This is not a typo - we want the basename of the original executable/DLL, as that's what debuggers will be looking for!
-				(path::join(path::get_directory(new_path), path::get_basename(existing_path)) + ".pdb").c_str(),
-				cbl::fs::overwrite | cbl::fs::maintain_timestamps);
+				fs::overwrite | fs::maintain_timestamps);
 	}
 	
 	gcc()
