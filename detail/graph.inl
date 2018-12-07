@@ -386,9 +386,9 @@ namespace graph
 
 		auto& cache = detail::get_cache();
 		std::string cache_path = detail::get_cache_path();
+		fs::mkdir(path::get_directory(cache_path.c_str()).c_str(), true);
 		if (FILE *serialized = fopen(cache_path.c_str(), "wb"))
 		{
-			
 			detail::serialize_cache_items<detail::fwrite_wrapper, nullptr>(cache, serialized);
 			fclose(serialized);
 		}
