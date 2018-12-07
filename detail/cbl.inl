@@ -5,6 +5,8 @@
 
 #include <cstdarg>
 #include <cctype>
+#include <mutex>
+#include <thread>
 #include <sstream>
 #include "../cbl.h"
 
