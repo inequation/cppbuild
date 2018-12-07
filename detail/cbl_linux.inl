@@ -264,7 +264,18 @@ namespace cbl
 
 		bool delete_file(const char *path)
 		{
-			assert(0 && "Unimplemented");
+			if (unlink(path) == 0)
+			{
+				cbl::log(cbl::severity::verbose, "Deleted file %s", path);
+				return true;
+			}
+			else
+			{
+				int error = errno;
+				cbl::warning("Failed to delete file %s", path);
+				cbl::log(cbl::severity::verbose, "Reason: %s", strerror(error));
+				return true;
+			}
 			return false;
 		}
 
@@ -516,6 +527,26 @@ namespace cbl
 
 	void process::wait_for_pid(uint32_t pid)
 	{
-		waitpid((pid_t)pid, nullptr, 0);
+		int wstatus = 0;
+		if (waitpid((pid_t)pid, &wstatus, 0) < 0)
+		{
+			int error = errno;
+			if (error == ECHILD)
+			{
+				// FIXME: Polling sucks, there must be an event to listen to.
+				cbl::log(cbl::severity::verbose, "Pid %d isn't a child, falling back to procfs polling");
+				std::string proc_path("/proc/" + std::to_string(pid));
+				while (access(proc_path.c_str(), F_OK) == 0)
+				{
+#if 1				// Just yielding doesn't give us much breathing room, the CPU keeps spinning.
+					usleep(500);
+#else
+					sched_yield();
+#endif
+				}
+			}
+			else
+				cbl::log(cbl::severity::verbose, "Waiting for pid %d failed; wstatus : %X, reason: %s", pid, wstatus, strerror(error));
+		}
 	}
 }
