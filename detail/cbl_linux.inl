@@ -68,7 +68,7 @@ namespace cbl
 				local = *static_alloc;
 
 			if (y) *y = local.tm_year + 1900;
-			if (M) *M = local.tm_mon;
+			if (M) *M = local.tm_mon + 1;
 			if (d) *d = local.tm_mday;
 			if (h) *h = local.tm_hour;
 			if (m) *m = local.tm_min;
