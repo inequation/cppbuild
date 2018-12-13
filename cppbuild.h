@@ -137,8 +137,8 @@ namespace graph
 	using dependency_timestamp_vector = std::vector<std::pair<std::string, uint64_t>>;
 	using timestamp_cache = std::unordered_map<std::string, dependency_timestamp_vector>;
 	using timestamp_cache_entry = timestamp_cache::value_type;
-	bool query_dependency_cache(const std::string& source, std::function<void(const std::string &)> push_dep);
-	void insert_dependency_cache(const std::string& source, const dependency_timestamp_vector &deps);
+	bool query_dependency_cache(const target &target, const configuration &cfg, const std::string& source, std::function<void(const std::string &)> push_dep);
+	void insert_dependency_cache(const target &target, const configuration &cfg, const std::string& source, const dependency_timestamp_vector &deps);
 
 	std::shared_ptr<action> generate_cpp_build_graph(const target& target, const configuration& c, std::shared_ptr<struct toolchain> tc);
 	void cull_build_graph(std::shared_ptr<action>& root);

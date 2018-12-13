@@ -60,6 +60,8 @@ namespace cbl
 			return str;
 		}
 	};
+
+	size_t combine_hash(size_t a, size_t b);
 }
 
 namespace std
@@ -68,9 +70,9 @@ namespace std
 	{
 		size_t operator()(const cbl::version &v) const
 		{
+			using namespace cbl;
 			hash<size_t> hasher;
-			auto combine = [](size_t a, size_t b) { return a ^ (b + 0x9e3779b9 + (a << 6) + (a >> 2)); };
-			return combine(hasher(v.major), combine(hasher(v.minor), combine(hasher(v.build), hasher(v.revision))));
+			return combine_hash(hasher(v.major), combine_hash(hasher(v.minor), combine_hash(hasher(v.build), hasher(v.revision))));
 		}
 	};
 }

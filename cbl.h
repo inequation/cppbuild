@@ -1,5 +1,7 @@
 #pragma once
 
+typedef std::vector<std::string> string_vector;
+
 namespace cbl
 {
 	namespace path
@@ -109,9 +111,12 @@ namespace cbl
 	};
 
 	constexpr platform get_host_platform();
+	constexpr const char *get_platform_str(platform);
 	constexpr const char *get_host_platform_str();
 
 	constexpr const char *get_default_toolchain_for_host();
+
+	size_t combine_hash(size_t a, size_t b);
 
 	enum class severity : uint8_t
 	{

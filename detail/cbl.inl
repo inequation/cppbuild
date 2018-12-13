@@ -30,6 +30,28 @@ namespace cbl
 		return toolchain_names[(uint8_t)get_host_platform()];
 	}
 
+	constexpr const char *get_platform_str(platform p)
+	{
+#define IF_ENUM_STR(x)	if (p == platform::x) return #x;
+		IF_ENUM_STR(win64)
+		else IF_ENUM_STR(linux64)
+		else IF_ENUM_STR(macos)
+		else IF_ENUM_STR(ps4)
+		else IF_ENUM_STR(xbox1)
+		else (assert(!"Unknown platform"), "unknown");
+#undef IF_ENUM_STR
+	}
+
+	constexpr const char *get_host_platform_str()
+	{
+		return get_platform_str(get_host_platform());
+	}
+
+	size_t combine_hash(size_t a, size_t b)
+	{
+		return a ^ (b + 0x9e3779b9 + (a << 6) + (a >> 2));
+	};
+
 	namespace path
 	{
 		string_vector split(const char *path)
@@ -203,20 +225,15 @@ namespace cbl
 
 	namespace detail
 	{
-		static constexpr severity compiled_log_level = severity::verbose;	// FIXME: Put in config.
-		static severity runtime_log_level = severity::verbose;	// FIXME: Put in config.
-
 		static FILE *log_file_stream;
 
 		void rotate_logs()
 		{
 			static bool rotated = false;
 			if (rotated)
-			{
 				return;
-			}
-			rotated = true;
-
+			
+			// Rotate the latest log file to a sortable, timestamped format.
 			std::string log_dir = path::join(path::get_cppbuild_cache_path(), "log");
 			fs::mkdir(log_dir.c_str(), true);
 			std::string log = path::join(log_dir, "cppbuild.log");
@@ -237,21 +254,54 @@ namespace cbl
 					warning("Failed to rotate log file %s to %s", log.c_str(), old_log.c_str());
 				}
 			}
+
+			// Delete old log files.
+			// TODO: Spin off a background task.
+			auto old_logs = cbl::fs::enumerate_files(cbl::path::join(log_dir, "*.log").c_str());
+			constexpr size_t max_old_log_files = 10;	// TODO: Put this in config.
+			if (old_logs.size() > max_old_log_files)
+			{
+				std::sort(old_logs.begin(), old_logs.end());
+				old_logs.erase(old_logs.end() - max_old_log_files, old_logs.end());
+				for (const auto &lf : old_logs)
+				{
+					if (!fs::delete_file(lf.c_str()))
+					{
+						warning("Failed to delete old log file %s", lf.c_str());
+					}
+				}
+			}
+
+			// Open the new stream.
 			log_file_stream = fopen(log.c_str(), "w");
-			// Make sure that handle inheritance doesn't block log rotation.
+			// Make sure that handle inheritance doesn't block log rotation in the deploying child process.
 			cbl::fs::disinherit_stream(log_file_stream);
 			atexit([]() { fclose(log_file_stream); });
+
+			rotated = true;
 		}
 
+		static constexpr severity compiled_log_level = severity::verbose;	// FIXME: Put in config.
+		static severity runtime_log_level = severity::	// FIXME: Put in config.
+#if _DEBUG
+			verbose
+#else
+			info
+#endif
+			;
+
+		static std::recursive_mutex log_mutex;
+
+		// Logging implementation. Thread safe at the cost of a mutex lock.
 		template<severity severity>
 		void log(const char *fmt, va_list va)
 		{
 			if (compiled_log_level <= severity && runtime_log_level <= severity)
 			{
+				// Since the utility calls made from rotate_logs() may log, we need a reentrant mutex.
+				std::lock_guard<std::recursive_mutex> _(log_mutex);
+				
 				rotate_logs();
-
-				static std::mutex mutex;
-				std::lock_guard<std::mutex> _(mutex);
 
 				std::ostringstream thread_id;
 				thread_id << std::this_thread::get_id();

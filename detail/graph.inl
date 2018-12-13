@@ -7,6 +7,27 @@
 
 namespace graph
 {
+	namespace detail
+	{
+		using cache_map_key = std::pair<std::string, platform>;
+	}
+}
+namespace std
+{
+	template <> struct hash<graph::detail::cache_map_key>
+	{
+		size_t operator()(const graph::detail::cache_map_key &k) const
+		{
+			using namespace cbl;
+			hash<string> string_hasher;
+			hash<uint8_t> byte_hasher;
+			return combine_hash(string_hasher(k.first), byte_hasher(static_cast<uint8_t>(k.second)));
+		}
+	};
+}
+
+namespace graph
+{
 	std::shared_ptr<action> generate_cpp_build_graph(const target& target, const configuration& cfg, std::shared_ptr<toolchain> tc)
 	{
 		std::shared_ptr<cpp_action> root = std::make_shared<cpp_action>();
@@ -345,47 +366,49 @@ namespace graph
 				cbl::log_verbose("[CacheSer] Magic number mismatch (expected %08X, got %08X)", cache_magic.i, m.i);
 		}
 
-		std::string get_cache_path()
+		std::string get_cache_path(const target &target, const configuration& cfg)
 		{
 			using namespace cbl;
 			using namespace cbl::path;
-			return join(get_cppbuild_cache_path(), join(get_host_platform_str(), "timestamps.bin"));
+			return join(get_cppbuild_cache_path(), join(get_platform_str(cfg.platform), join(target.first, "timestamps.bin")));
 		}
 
-		timestamp_cache& get_cache()
+		static std::unordered_map<cache_map_key, timestamp_cache> cache_map;
+
+		timestamp_cache& find_or_create_cache(const target &target, const configuration& cfg)
 		{
 			using namespace cbl;
 
-			static timestamp_cache *cache = nullptr;
-			if (!cache)
+			static std::mutex mutex;
+			std::lock_guard<std::mutex> _(mutex);
+
+			auto key = std::make_pair(target.first, cfg.platform);
+			auto it = cache_map.find(key);
+			if (it == cache_map.end())
 			{
-				static std::mutex m;
-				std::lock_guard<std::mutex> _(m);
-				if (!cache)
+				auto cache = cache_map[key];
+				std::string cache_path = get_cache_path(target, cfg);
+				if (FILE *serialized = fopen(cache_path.c_str(), "rb"))
 				{
-					cache = new timestamp_cache;
-					std::string cache_path = get_cache_path();
-					if (FILE *serialized = fopen(cache_path.c_str(), "rb"))
-					{
-						detail::serialize_cache_items<fread, nullptr>(*cache, serialized);
-						fclose(serialized);
-					}
-					else
-					{
-						log_verbose("Failed to open timestamp cache for reading from %s, using a blank slate", cache_path.c_str());
-					}
+					detail::serialize_cache_items<fread, nullptr>(cache, serialized);
+					fclose(serialized);
 				}
+				else
+				{
+					log_verbose("Failed to open timestamp cache for reading from %s, using a blank slate", cache_path.c_str());
+				}
+				return cache;
 			}
-			return *cache;
+			return it->second;
 		}
 	};
 
-	void save_timestamp_cache()
+	void save_timestamp_cache(const target &target, const configuration& cfg)
 	{
 		using namespace cbl;
 
-		auto& cache = detail::get_cache();
-		std::string cache_path = detail::get_cache_path();
+		auto& cache = detail::find_or_create_cache(target, cfg);
+		std::string cache_path = detail::get_cache_path(target, cfg);
 		fs::mkdir(path::get_directory(cache_path.c_str()).c_str(), true);
 		if (FILE *serialized = fopen(cache_path.c_str(), "wb"))
 		{
@@ -398,9 +421,9 @@ namespace graph
 		}
 	}
 
-	bool query_dependency_cache(const std::string& source, std::function<void(const std::string &)> push_dep)
+	bool query_dependency_cache(const target &target, const configuration& cfg, const std::string& source, std::function<void(const std::string &)> push_dep)
 	{
-		auto& cache = detail::get_cache();
+		auto& cache = detail::find_or_create_cache(target, cfg);
 
 		auto it = cache.find(source);
 		if (it != cache.end())
@@ -436,9 +459,9 @@ namespace graph
 		return false;
 	}
 
-	void insert_dependency_cache(const std::string& source, const graph::dependency_timestamp_vector &deps)
+	void insert_dependency_cache(const target &target, const configuration& cfg, const std::string& source, const graph::dependency_timestamp_vector &deps)
 	{
-		auto& cache = detail::get_cache();
+		auto& cache = detail::find_or_create_cache(target, cfg);
 
 		cache[source] = deps;
 	}

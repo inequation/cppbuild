@@ -136,7 +136,7 @@ struct msvc : public toolchain
 			inputs.push_back(dep_action);
 		};
 
-		if (graph::query_dependency_cache(source, push_dep))
+		if (graph::query_dependency_cache(target, cfg, source, push_dep))
 			return;
 
 		std::string cmdline = generate_cl_commandline_shared(target, cfg, false);
@@ -182,10 +182,10 @@ struct msvc : public toolchain
 				}
 				deps.push_back(std::make_pair(i->outputs[0], i->output_timestamps[0]));
 			}
-			graph::insert_dependency_cache(source, deps);
+			graph::insert_dependency_cache(target, cfg, source, deps);
 		}
 
-		graph::save_timestamp_cache();
+		graph::save_timestamp_cache(target, cfg);
 	}
 
 	std::shared_ptr<graph::action> generate_compile_action_for_cpptu(const target& target, const std::string& tu_path, const configuration& cfg) override

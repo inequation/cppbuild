@@ -23,11 +23,6 @@ namespace cbl
 		return platform::win64;
 	}
 
-	constexpr const char *get_host_platform_str()
-	{
-		return "win64";
-	}
-
 	namespace path
 	{
 		constexpr const char get_path_separator()
