@@ -386,7 +386,7 @@ namespace graph
 			auto it = cache_map.find(key);
 			if (it == cache_map.end())
 			{
-				auto cache = cache_map[key];
+				timestamp_cache& cache = cache_map[key];
 				std::string cache_path = get_cache_path(target, cfg);
 				if (FILE *serialized = fopen(cache_path.c_str(), "rb"))
 				{
