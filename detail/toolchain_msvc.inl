@@ -140,7 +140,7 @@ struct msvc : public toolchain
 			return;
 
 		std::string cmdline = generate_cl_commandline_shared(target, cfg, false);
-		cmdline += " /c /showIncludes /P /FiNUL";
+		cmdline += " /c /showIncludes /E";
 		std::vector<uint8_t> buffer;
 		auto append_to_buffer = [&buffer](const void *data, size_t byte_count)
 		{
