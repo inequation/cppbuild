@@ -435,6 +435,7 @@ namespace graph
 				uint64_t stamp = cbl::fs::get_modification_timestamp(entry.first.c_str());
 				if (stamp == 0 || stamp != entry.second)
 				{
+					cbl::log_verbose("Outdated time stamp for dependency %s (%" PRId64 " vs %" PRId64 ")", entry.first.c_str(), stamp, entry.second);
 					up_to_date = false;
 					break;
 				}

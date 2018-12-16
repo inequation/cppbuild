@@ -130,6 +130,7 @@ struct msvc : public toolchain
 	{
 		auto push_dep = [&inputs](const std::string &name)
 		{
+			assert(!name.empty());
 			auto dep_action = std::make_shared<graph::cpp_action>();
 			dep_action->type = (graph::action::action_type)graph::cpp_action::include;
 			dep_action->outputs.push_back(name);
@@ -148,7 +149,7 @@ struct msvc : public toolchain
 		};
 		cmdline += " " + source;
 		
-		auto p = cbl::process::start_async(cmdline.c_str(), append_to_buffer, append_to_buffer);
+		auto p = cbl::process::start_async(cmdline.c_str(), append_to_buffer, [](const void *, size_t) {});
 		if (p && 0 == p->wait())
 		{
 			constexpr const char needle[] = "Note: including file: ";

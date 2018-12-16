@@ -11,6 +11,7 @@
 #include <cassert>
 #include <ctime>
 #include <cstring>
+#include <cinttypes>
 
 typedef std::vector<std::string> string_vector;
 
