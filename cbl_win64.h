@@ -30,6 +30,12 @@ namespace cbl
 			bool try_read_software_path_key(const char *sub_key, const char *value_name, std::string &in_out_path);
 		}
 
+		namespace debug
+		{
+			std::string get_pdb_path_for_module(uintptr_t base_pointer);
+			void filter_own_pdb(string_vector& paths);
+		}
+
 		bool wide_str_to_ansi_str(std::string& ansi, wchar_t *wide);
 	}
 }

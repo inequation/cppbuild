@@ -664,6 +664,62 @@ namespace cbl
 			
 		}
 
+		namespace debug
+		{
+			std::string get_pdb_path_for_module(uintptr_t base_pointer)
+			{
+				// Source: https://deplinenoise.wordpress.com/2013/06/14/getting-your-pdb-name-from-a-running-executable-windows/
+
+				struct pdb_info
+				{
+					DWORD signature;
+					BYTE guid[16];
+					DWORD age;
+					char filename[1];
+				};
+
+				IMAGE_DOS_HEADER* dos_header = (IMAGE_DOS_HEADER*)base_pointer;
+				IMAGE_FILE_HEADER* file_header = (IMAGE_FILE_HEADER*)(base_pointer + dos_header->e_lfanew + 4);
+				if (file_header->SizeOfOptionalHeader >= sizeof(IMAGE_OPTIONAL_HEADER))
+				{
+					IMAGE_OPTIONAL_HEADER* opt_header = (IMAGE_OPTIONAL_HEADER*)(((char*)file_header) + sizeof(IMAGE_FILE_HEADER));
+					IMAGE_DATA_DIRECTORY* dir = &opt_header->DataDirectory[IMAGE_DIRECTORY_ENTRY_DEBUG];
+					IMAGE_DEBUG_DIRECTORY* dbg_dir = (IMAGE_DEBUG_DIRECTORY*)(base_pointer + dir->VirtualAddress);
+					if (IMAGE_DEBUG_TYPE_CODEVIEW == dbg_dir->Type)
+					{
+						auto* info = (pdb_info*)(base_pointer + dbg_dir->AddressOfRawData);
+						if (0 == memcmp(&info->signature, "RSDS", 4))
+						{
+							return info->filename;
+						}
+					}
+				}
+				return std::string();
+			}
+
+			void filter_own_pdb(string_vector& paths)
+			{
+				auto pdb = get_pdb_path_for_module((uintptr_t)GetModuleHandle(NULL));
+				if (!pdb.empty())
+				{
+					std::string needle = path::get_filename(pdb.c_str());
+					for (auto begin = paths.begin();;)
+					{
+						auto it = std::find_if(paths.begin(), paths.end(),
+							[&needle](const auto &p) { return path::get_filename(p.c_str()) == needle; });
+						if (it == paths.end())
+							break;
+						else
+						{
+							auto offset = it - paths.begin();
+							paths.erase(it);
+							begin = paths.begin() + offset;
+						}
+					}
+				}
+			}
+		}
+
 		bool wide_str_to_ansi_str(std::string& ansi, wchar_t *wide)
 		{
 			ansi.resize(wcslen(wide) + 1);

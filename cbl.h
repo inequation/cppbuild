@@ -13,6 +13,7 @@ namespace cbl
 		std::string get_extension(const char *path);
 		std::string get_path_without_extension(const char *path);
 		std::string get_directory(const char *path);
+		std::string get_filename(const char *path);
 		std::string get_basename(const char *path);
 		std::string get_absolute(const char *path);
 		// If to is nullptr, current working directory is used.

@@ -270,6 +270,10 @@ namespace detail
 		{
 			info("cppbuild executable up to date");
 			auto old_copies = cbl::fs::enumerate_files(cbl::path::join(staging_dir, "build-*").c_str());
+#ifdef _WIN64
+			// Don't cannibalise our own debug info!
+			cbl::win64::debug::filter_own_pdb(old_copies);
+#endif
 			for (auto& o : old_copies)
 			{
 				cbl::fs::delete_file(o.c_str());
