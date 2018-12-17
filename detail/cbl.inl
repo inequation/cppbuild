@@ -170,6 +170,51 @@ namespace cbl
 		{
 			return "cppbuild-cache";
 		}
+
+		std::string get_relative_to(const char *path, const char *to_)
+		{
+			std::string to;
+			if (to_)
+				to = to_;
+			else
+				to = get_working_path();
+
+			auto a_abs = get_absolute(path);
+			auto b_abs = get_absolute(to.c_str());
+
+			auto a = split(a_abs.c_str());
+			auto b = split(b_abs.c_str());
+
+#if defined(_WIN64)
+			{
+				const auto &a_fr = a.front();
+				const auto &b_fr = b.front();
+				// Paths on different drives can't be relative.
+				if (a_fr.size() == 2 && b_fr.size() == 2
+					&& a_fr[0] != b_fr[0	]
+					&& a_fr[1] == ':' && b_fr[1] == ':')
+					return a_abs;
+			}
+#endif
+
+			// Find the furthest common root.
+			while (!a.empty() && !b.empty())
+			{
+				if (a.front() == b.front())
+				{
+					a.erase(a.begin());
+					b.erase(b.begin());
+				}
+			}
+
+			// Go up the tree as far as needed.
+			for (size_t i = b.size(); i > 0; --i)
+			{
+				a.insert(a.begin(), "..");
+			}
+
+			return join(a);
+		}
 	};
 
 	string_vector vwrap(const std::string& s)

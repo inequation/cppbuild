@@ -40,7 +40,7 @@ void dump_builds(const target_map& t, const configuration_map& c)
 			"\t\t{\n",
 			platforms[(int)cfg.second.platform],
 			booleans[cfg.second.emit_debug_information],
-			cfg.second.optimize == configuration::Os ? "s" : std::to_string((int)cfg.second.optimize).c_str());
+			cfg.second.optimize == configuration_data::Os ? "s" : std::to_string((int)cfg.second.optimize).c_str());
 		for (auto& d : cfg.second.definitions)
 		{
 			printf("\t\t\t%s%s%s\n",
@@ -202,10 +202,11 @@ namespace detail
 		target.used_toolchain = cbl::get_default_toolchain_for_host();
 
 		configuration cfg;
-		cfg = base_configurations::debug(cbl::get_host_platform());
-		cfg.additional_include_directories.push_back("cppbuild");
-		cfg.definitions.push_back(std::make_pair("CPPBUILD_GENERATION", std::to_string(CPPBUILD_GENERATION == 0 ? 2 : (CPPBUILD_GENERATION + 1))));
-		cfg.additional_toolchain_options["msvc link"] = cbl::vwrap("/SUBSYSTEM:CONSOLE");
+		cfg.first = "bootstrap";
+		cfg.second = base_configurations::debug(cbl::get_host_platform());
+		cfg.second.additional_include_directories.push_back("cppbuild");
+		cfg.second.definitions.push_back(std::make_pair("CPPBUILD_GENERATION", std::to_string(CPPBUILD_GENERATION == 0 ? 2 : (CPPBUILD_GENERATION + 1))));
+		cfg.second.additional_toolchain_options["msvc link"] = cbl::vwrap("/SUBSYSTEM:CONSOLE");
 
 		return std::make_pair(
 			std::make_pair(cppbuild, target),
@@ -376,7 +377,7 @@ int main(int argc, char *argv[])
 	}
 
 	cbl::info("Building target %s in configuration %s", target->first.c_str(), cfg->first.c_str());
-	auto build = setup_build(*target, cfg->second, toolchains);
+	auto build = setup_build(*target, *cfg, toolchains);
 	cull_build(build.first);
-	return execute_build(*target, build.first, cfg->second, build.second);
+	return execute_build(*target, build.first, *cfg, build.second);
 }

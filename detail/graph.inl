@@ -46,6 +46,7 @@ namespace graph
 	{
 		void cull_action(std::shared_ptr<action>& action, uint64_t root_timestamp)
 		{
+			uint64_t self_timestamp = action->get_oldest_output_timestamp();
 			switch (action->type)
 			{
 			case cpp_action::include:
@@ -58,14 +59,20 @@ namespace graph
 					switch (input->type)
 					{
 					case cpp_action::include:
+					{
+						uint64_t include_timestamp = input->get_oldest_output_timestamp();
+						if (include_timestamp < root_timestamp)
 						{
-							uint64_t include_timestamp = input->get_oldest_output_timestamp();
-							if (include_timestamp < root_timestamp)
-							{
-								action->inputs.erase(action->inputs.begin() + i);
-							}
+							cbl::log_verbose("Culling input type %d %s for action %s", input->type, input->outputs[0].c_str(), action->outputs[0].c_str());
+							action->inputs.erase(action->inputs.begin() + i);
 						}
-						break;
+						else
+						{
+							// Keep own timestamp up to date with includes.
+							self_timestamp = (self_timestamp == 0 || include_timestamp == 0) ? 0 : std::max(self_timestamp, include_timestamp);
+						}
+					}
+					break;
 					case cpp_action::source:
 						assert(!"Source actions may only have includes as input");
 						break;
@@ -74,10 +81,7 @@ namespace graph
 						abort();
 					}
 				}
-				if (action->inputs.empty())
-				{
-					action = nullptr;
-				}
+				action->output_timestamps[0] = self_timestamp;
 				break;
 			case cpp_action::compile:
 			case cpp_action::link:
@@ -85,14 +89,28 @@ namespace graph
 				{
 					auto& input = action->inputs[i];
 					cull_action(input, root_timestamp);
-					if (!input)
+					uint64_t input_timestamp = input ? input->get_oldest_output_timestamp() : ~0u;
+					// Only cull inputs if we exist.
+					if (self_timestamp > 0 && input_timestamp > 0 && (!input || input_timestamp < root_timestamp))
 					{
+						if (input)
+						cbl::log_verbose("Culling input type %d %s for action %s", input->type, input->outputs[0].c_str(), action->outputs[0].c_str());
 						action->inputs.erase(action->inputs.begin() + i);
 					}
+					else
+					{
+						// Keep own timestamp up to date with includes.
+						self_timestamp = (self_timestamp == 0 || input_timestamp == 0) ? 0 : std::max(self_timestamp, input_timestamp);
+					}
 				}
-				if (action->inputs.empty())
+				if (action->inputs.empty() && root_timestamp != 0)
 				{
+					cbl::log_verbose("Culling action type %d %s", action->type, action->outputs[0].c_str());
 					action = nullptr;
+				}
+				else
+				{
+					action->output_timestamps[0] = self_timestamp;
 				}
 				break;
 			default:
@@ -118,6 +136,11 @@ namespace graph
 		if (!root)
 		{
 			// Empty graph, nothing to build.
+			return 0;
+		}
+		if (root->inputs.empty())
+		{
+			// This action is built and is probably a dependency up the tree.
 			return 0;
 		}
 		switch (root->type)
@@ -161,6 +184,8 @@ namespace graph
 				auto i = root->inputs[0];
 				assert(i->outputs.size() == 1);
 				assert(i->type == (action::action_type)cpp_action::source);
+				// FIXME: Find a more appropriate place for this mkdir.
+				cbl::fs::mkdir(cbl::path::get_directory(root->outputs[0].c_str()).c_str(), true);
 				if (auto p = tc->invoke_compiler(target, root->outputs[0], i->outputs[0], cfg, on_stderr, on_stdout))
 				{
 					int exit_code = p->wait();
@@ -370,7 +395,7 @@ namespace graph
 		{
 			using namespace cbl;
 			using namespace cbl::path;
-			return join(get_cppbuild_cache_path(), join(get_platform_str(cfg.platform), join(target.first, "timestamps.bin")));
+			return join(get_cppbuild_cache_path(), join(get_platform_str(cfg.second.platform), join(target.first, "timestamps.bin")));
 		}
 
 		static std::unordered_map<cache_map_key, timestamp_cache> cache_map;
@@ -382,7 +407,7 @@ namespace graph
 			static std::mutex mutex;
 			std::lock_guard<std::mutex> _(mutex);
 
-			auto key = std::make_pair(target.first, cfg.platform);
+			auto key = std::make_pair(target.first, cfg.second.platform);
 			auto it = cache_map.find(key);
 			if (it == cache_map.end())
 			{

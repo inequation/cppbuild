@@ -12,9 +12,11 @@
 #else
 	#include <fcntl.h>
 	#include <glob.h>
+	#include <limits.h>
 	#include <sched.h>
 	#include <spawn.h>
 	#include <time.h>
+	#include <stdlib.h>
 	#include <unistd.h>
 	#include <wordexp.h>
 	#include <sys/mman.h>
@@ -38,6 +40,34 @@ namespace cbl
 		constexpr const char get_alt_path_separator() { return get_path_separator(); }
 
 		bool is_path_separator(char c) { return c == '/'; }
+
+		std::string get_absolute(const char *path)
+		{
+			std::string abs;
+			abs.resize(PATH_MAX);
+			if (!realpath(path, (char *)abs.data()))
+			{
+				int error = errno;
+				cbl::log_verbose("Failed to get absolute path for %s, reason: %s", path, strerror(error));
+				return "";
+			}
+			abs.resize(strlen(abs.c_str()));
+			return abs;
+		}
+
+		std::string get_working_path()
+		{
+			std::string abs;
+			abs.resize(PATH_MAX);
+			if (!getcwd((char *)abs.data(), abs.size()))
+			{
+				int error = errno;
+				cbl::log_verbose("Failed to get working path, reason: %s", strerror(error));
+				return "";
+			}
+			abs.resize(strlen(abs.c_str()));
+			return abs;
+		}
 	};
 
 	namespace time

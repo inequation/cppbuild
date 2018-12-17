@@ -15,7 +15,7 @@ enum class platform
 
 #include "detail/core.inl"
 
-struct configuration
+struct configuration_data
 {
 	::platform platform;
 
@@ -34,6 +34,7 @@ struct configuration
 
 	std::unordered_map<std::string, string_vector> additional_toolchain_options;
 };
+typedef std::pair<std::string, configuration_data> configuration;
 
 namespace graph { struct action; };
 namespace cbl
@@ -89,11 +90,12 @@ struct toolchain
 		const configuration&)
 	{ return nullptr; };
 	virtual bool deploy_executable_with_debug_symbols(const char *existing_path, const char *new_path) = 0;
+	static std::string get_intermediate_path_for_cpptu(const char *source_path, const char *object_extension, const target &, const configuration &);
 };
 
 int build_target(target&, configuration&);
 
-typedef std::unordered_map<std::string, configuration> configuration_map;
+typedef std::unordered_map<std::string, configuration_data> configuration_map;
 typedef std::unordered_map<std::string, std::shared_ptr<toolchain>> toolchain_map;
 
 //=============================================================================

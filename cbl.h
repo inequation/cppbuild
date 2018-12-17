@@ -14,12 +14,23 @@ namespace cbl
 		std::string get_path_without_extension(const char *path);
 		std::string get_directory(const char *path);
 		std::string get_basename(const char *path);
+		std::string get_absolute(const char *path);
+		// If to is nullptr, current working directory is used.
+		std::string get_relative_to(const char *path, const char *to = nullptr);
 
 		// Splits a path along path separators.
 		string_vector split(const char *path);
 		// Joins paths using the host platform-specific path separator.
 		std::string join(const std::string& a, const std::string& b);
+		template<typename... Args>
+		std::string join(const std::string& a, const std::string& b, Args const&... args)
+		{
+			return join(join(a, b), args...);
+		}
 
+
+		// Returns the current working directory.
+		std::string get_working_path();
 		const char *get_cppbuild_cache_path();
 	};
 
@@ -46,32 +57,32 @@ namespace cbl
 	// Factories for generating typical basic configurations.
 	namespace base_configurations
 	{
-		static const configuration debug(platform p)
+		static const configuration_data debug(platform p)
 		{
-			static configuration c;
+			static configuration_data c;
 			c.platform = p;
 			c.emit_debug_information = true;
-			c.optimize = configuration::O1;
+			c.optimize = configuration_data::O1;
 			c.use_debug_crt = true;
 			return c;
 		};
 
-		static const configuration release(platform p)
+		static const configuration_data release(platform p)
 		{
-			static configuration c;
+			static configuration_data c;
 			c.platform = p;
 			c.emit_debug_information = true;
-			c.optimize = configuration::O2;
+			c.optimize = configuration_data::O2;
 			c.use_debug_crt = true;
 			return c;
 		};
 
-		static const configuration shipping(platform p)
+		static const configuration_data shipping(platform p)
 		{
-			static configuration c;
+			static configuration_data c;
 			c.platform = p;
 			c.emit_debug_information = true;
-			c.optimize = configuration::O3;
+			c.optimize = configuration_data::O3;
 			c.use_debug_crt = false;
 			return c;
 		};

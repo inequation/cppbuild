@@ -7,9 +7,9 @@ struct gcc : public toolchain
 {
 	constexpr static const char key[] = "gcc";
 
-	static std::string get_object_for_cpptu(const std::string& source)
+	static std::string get_object_for_cpptu(const std::string& source, const target &target, const configuration &cfg)
 	{
-		return cbl::path::get_path_without_extension(source.c_str()) + ".o";
+		return toolchain::get_intermediate_path_for_cpptu(source.c_str(), ".o", target, cfg);
 	}
 
 	virtual void pick_toolchain_versions()
@@ -54,8 +54,8 @@ struct gcc : public toolchain
 	{
 		const string_vector *addtn_opts = nullptr;
 		{
-			auto it = cfg.additional_toolchain_options.find("gcc link");
-			if (it != cfg.additional_toolchain_options.end())
+			auto it = cfg.second.additional_toolchain_options.find("gcc link");
+			if (it != cfg.second.additional_toolchain_options.end())
 			{
 				addtn_opts = &it->second;
 			}
@@ -67,7 +67,7 @@ struct gcc : public toolchain
 			{
 				std::string cmdline = generate_gcc_commandline_shared(target, cfg, true);
 				cmdline += " -o " + target.second.output;
-				if (cfg.use_debug_crt)
+				if (cfg.second.use_debug_crt)
 				{
 					cmdline += " -lmcheck";
 				}
@@ -171,7 +171,7 @@ struct gcc : public toolchain
 
 		auto action = std::make_shared<graph::cpp_action>();
 		action->type = (graph::action::action_type)graph::cpp_action::compile;
-		action->outputs.push_back(get_object_for_cpptu(tu_path));
+		action->outputs.push_back(get_object_for_cpptu(tu_path, target, cfg));
 		action->inputs.push_back(source);
 		return action;
 	}
@@ -226,22 +226,22 @@ private:
 	std::string generate_gcc_commandline_shared(const target& target, const configuration& cfg, const bool for_linking)
 	{
 		std::string cmdline = "\"" + cbl::path::join(compiler_dir, "g++") + "\"";
-		if (cfg.emit_debug_information)
+		if (cfg.second.emit_debug_information)
 		{
 			cmdline += " -g";
 		}
-		if (cfg.optimize <= configuration::O3)
+		if (cfg.second.optimize <= configuration_data::O3)
 		{
 			cmdline += " -O";
-			cmdline += "0123"[cfg.optimize];
+			cmdline += "0123"[cfg.second.optimize];
 		}
-		else if (cfg.optimize == configuration::Os)
+		else if (cfg.second.optimize == configuration_data::Os)
 		{
 			cmdline += " -Os";
 		}
 		if (!for_linking)
 		{
-			for (auto& define : cfg.definitions)
+			for (auto& define : cfg.second.definitions)
 			{
 				cmdline += " -D" + define.first;
 				if (!define.second.empty())
@@ -249,7 +249,7 @@ private:
 					cmdline += "=" + define.second;
 				}
 			}
-			for (auto& include_dir : cfg.additional_include_directories)
+			for (auto& include_dir : cfg.second.additional_include_directories)
 			{
 				cmdline += " -I" + include_dir;
 			}
@@ -258,12 +258,12 @@ private:
 		{
 			cmdline += " -fpic -shared";
 		}
-		if (cfg.use_debug_crt)
+		if (cfg.second.use_debug_crt)
 		{
 			cmdline += " -D_GLIBCXX_DEBUG";
 		}
-		auto additional_opts = cfg.additional_toolchain_options.find(key);
-		if (additional_opts != cfg.additional_toolchain_options.end())
+		auto additional_opts = cfg.second.additional_toolchain_options.find(key);
+		if (additional_opts != cfg.second.additional_toolchain_options.end())
 		{
 			for (auto& opt : additional_opts->second)
 			{

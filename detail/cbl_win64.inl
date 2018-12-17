@@ -40,6 +40,34 @@ namespace cbl
 			// A lot of C++ code will use forward slashes, so support that as well.
 			return c == '/' || c == '\\';
 		}
+
+		std::string get_absolute(const char *path)
+		{
+			std::string abs;
+			abs.resize(MAX_PATH);
+			DWORD written = GetFullPathNameA(path, abs.size(), (LPSTR)abs.data(), nullptr);
+			if (!written || written > abs.size())
+				return "";
+			else
+			{
+				abs.resize(written);
+				return abs;
+			}
+		}
+
+		std::string get_working_path()
+		{
+			std::string cwd;
+			cwd.resize(MAX_PATH);
+			DWORD written = GetCurrentDirectoryA(cwd.size(), (LPSTR)cwd.data());
+			if (!written || written > cwd.size())
+				return "";
+			else
+			{
+				cwd.resize(written);
+				return cwd;
+			}
+		}
 	};
 
 	namespace time
