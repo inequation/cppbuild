@@ -331,6 +331,8 @@ void print_version()
 
 int main(int argc, char *argv[])
 {
+	cbl::detail::rotate_logs();
+
 	toolchain_map toolchains;
 	discover_toolchains(toolchains);
 

@@ -38,7 +38,7 @@ namespace cbl
 		else IF_ENUM_STR(macos)
 		else IF_ENUM_STR(ps4)
 		else IF_ENUM_STR(xbox1)
-		else (assert(!"Unknown platform"), "unknown");
+		else return (assert(!"Unknown platform"), "unknown");
 #undef IF_ENUM_STR
 	}
 
@@ -125,6 +125,22 @@ namespace cbl
 			else if (const char* sep = strrchr(path, get_alt_path_separator()))
 			{
 				return std::string(path, sep - path);
+			}
+			else
+			{
+				return std::string(path);
+			}
+		}
+
+		std::string get_filename(const char *path)
+		{
+			if (const char* sep = strrchr(path, get_path_separator()))
+			{
+				return std::string(sep + 1);
+			}
+			else if (const char* sep = strrchr(path, get_alt_path_separator()))
+			{
+				return std::string(sep + 1);
 			}
 			else
 			{
@@ -274,10 +290,6 @@ namespace cbl
 
 		void rotate_logs()
 		{
-			static bool rotated = false;
-			if (rotated)
-				return;
-			
 			// Rotate the latest log file to a sortable, timestamped format.
 			std::string log_dir = path::join(path::get_cppbuild_cache_path(), "log");
 			fs::mkdir(log_dir.c_str(), true);
@@ -322,8 +334,6 @@ namespace cbl
 			// Make sure that handle inheritance doesn't block log rotation in the deploying child process.
 			cbl::fs::disinherit_stream(log_file_stream);
 			atexit([]() { fclose(log_file_stream); });
-
-			rotated = true;
 		}
 
 		static constexpr severity compiled_log_level = severity::verbose;	// FIXME: Put in config.
@@ -335,19 +345,12 @@ namespace cbl
 #endif
 			;
 
-		static std::recursive_mutex log_mutex;
-
-		// Logging implementation. Thread safe at the cost of a mutex lock.
+		// Logging implementation. Thread safe at the cost of a mutex lock around the actual buffer emission.
 		template<severity severity>
 		void log(const char *fmt, va_list va)
 		{
 			if (compiled_log_level <= severity && runtime_log_level <= severity)
 			{
-				// Since the utility calls made from rotate_logs() may log, we need a reentrant mutex.
-				std::lock_guard<std::recursive_mutex> _(log_mutex);
-				
-				rotate_logs();
-
 				std::ostringstream thread_id;
 				thread_id << std::this_thread::get_id();
 
@@ -387,17 +390,24 @@ namespace cbl
 				};
 				int h, m, s, us;
 				time::of_day(time::now(), nullptr, nullptr, nullptr, &h, &m, &s, &us);
-				auto emit = [&](FILE *stream)
+
 				{
-					fprintf(stream, "[%02d:%02d:%02d.%03d][Thread %s]%s ", h, m, s, us / 1000,
-						thread_id.str().c_str(), severity_tags[(int)severity]);
-					fputs(buffer, stream);
-					fputc('\n', stream);
-				};
-				emit(output_stream);
-				if (log_file_stream)
-				{
-					emit(log_file_stream);
+					// This is the only part that can't happen in parallel.
+					static std::mutex mutex;
+					std::lock_guard<std::mutex> _(mutex);
+
+					auto emit = [&](FILE *stream)
+					{
+						fprintf(stream, "[%02d:%02d:%02d.%03d][Thread %s]%s ", h, m, s, us / 1000,
+							thread_id.str().c_str(), severity_tags[(int)severity]);
+						fputs(buffer, stream);
+						fputc('\n', stream);
+					};
+					emit(output_stream);
+					if (log_file_stream)
+					{
+						emit(log_file_stream);
+					}
 				}
 #if defined(_GNU_SOURCE)
 				if (buffer)
