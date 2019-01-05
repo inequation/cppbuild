@@ -70,7 +70,7 @@ struct msvc : public toolchain
 		}
 	}
 
-	std::shared_ptr<cbl::process> invoke_compiler(
+	cbl::deferred_process invoke_compiler(
 		const target& target,
 		const std::string& object,
 		const std::string& source,
@@ -80,10 +80,10 @@ struct msvc : public toolchain
 	{
 		std::string cmdline = generate_cl_commandline_shared(target, cfg, false);
 		cmdline += " /c /Fo" + object + " " + source;
-		return cbl::process::start_async(cmdline.c_str(), on_stderr, on_stdout);
+		return cbl::process::start_deferred(cmdline.c_str(), on_stderr, on_stdout);
 	}
 
-	std::shared_ptr<cbl::process> invoke_linker(
+	cbl::deferred_process invoke_linker(
 		const target& target,
 		const string_vector& source_paths,
 		const configuration& cfg,
@@ -117,7 +117,7 @@ struct msvc : public toolchain
 						cmdline += " " + o;
 					}
 				}
-				return cbl::process::start_async(cmdline.c_str());
+				return cbl::process::start_deferred(cmdline.c_str());
 			}
 		default:
 			assert(!"Unimplmented");

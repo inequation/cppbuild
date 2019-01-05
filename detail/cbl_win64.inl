@@ -319,103 +319,108 @@ namespace cbl
 		, out{ INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE }
 	{}
 
-	std::shared_ptr<process> process::start_async(
-		const char *commandline,
+	deferred_process process::start_deferred(
+		const char *not_owned_commandline,
 		pipe_output_callback on_stderr,
 		pipe_output_callback on_stdout,
 		const std::vector<uint8_t> *stdin_buffer, void *environment)
 	{
-		process *p = nullptr;
-		auto safe_close_handles = [](HANDLE h[2])
+		std::string commandline = not_owned_commandline;
+		auto kickoff = [=]() -> std::shared_ptr<process>
 		{
-			if (h[pipe_write] != INVALID_HANDLE_VALUE)
-				CloseHandle(h[pipe_write]);
-			if (h[pipe_read] != INVALID_HANDLE_VALUE)
-				CloseHandle(h[pipe_read]);
-		};
-
-		SECURITY_ATTRIBUTES sec_attr;
-		sec_attr.nLength = sizeof(sec_attr);
-		sec_attr.bInheritHandle = TRUE;
-		sec_attr.lpSecurityDescriptor = nullptr;
-			
-		HANDLE in[2] = { INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE };
-		HANDLE out[2] = { INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE };
-		HANDLE err[2] = { INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE };
-
-		auto safe_create_pipe = [&](HANDLE h[2], bool inherit_write) -> bool
-		{
-			if (!CreatePipe(&h[pipe_read], &h[pipe_write], &sec_attr, 0) ||
-				!SetHandleInformation(h[inherit_write ? pipe_write : pipe_read], HANDLE_FLAG_INHERIT, 0))
+			process *p = nullptr;
+			auto safe_close_handles = [](HANDLE h[2])
 			{
-				safe_close_handles(in);
-				safe_close_handles(err);
-				safe_close_handles(out);
-				return false;
+				if (h[pipe_write] != INVALID_HANDLE_VALUE)
+					CloseHandle(h[pipe_write]);
+				if (h[pipe_read] != INVALID_HANDLE_VALUE)
+					CloseHandle(h[pipe_read]);
+			};
+
+			SECURITY_ATTRIBUTES sec_attr;
+			sec_attr.nLength = sizeof(sec_attr);
+			sec_attr.bInheritHandle = TRUE;
+			sec_attr.lpSecurityDescriptor = nullptr;
+
+			HANDLE in[2] = { INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE };
+			HANDLE out[2] = { INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE };
+			HANDLE err[2] = { INVALID_HANDLE_VALUE, INVALID_HANDLE_VALUE };
+
+			auto safe_create_pipe = [&](HANDLE h[2], bool inherit_write) -> bool
+			{
+				if (!CreatePipe(&h[pipe_read], &h[pipe_write], &sec_attr, 0) ||
+					!SetHandleInformation(h[inherit_write ? pipe_write : pipe_read], HANDLE_FLAG_INHERIT, 0))
+				{
+					safe_close_handles(in);
+					safe_close_handles(err);
+					safe_close_handles(out);
+					return false;
+				}
+				return true;
+			};
+
+			if (stdin_buffer && !safe_create_pipe(in, true))
+			{
+				return nullptr;
 			}
-			return true;
+			if (on_stderr && !safe_create_pipe(err, false))
+			{
+				return nullptr;
+			}
+			if (on_stdout && !safe_create_pipe(out, false))
+			{
+				return nullptr;
+			}
+
+			PROCESS_INFORMATION proc_info = { 0 };
+			STARTUPINFO start_info = { 0 };
+			start_info.cb = sizeof(start_info);
+			start_info.hStdError = err[pipe_write] != INVALID_HANDLE_VALUE ? err[pipe_write] : GetStdHandle(STD_ERROR_HANDLE);
+			start_info.hStdOutput = out[pipe_write] != INVALID_HANDLE_VALUE ? out[pipe_write] : GetStdHandle(STD_OUTPUT_HANDLE);
+			start_info.hStdInput = in[pipe_read] != INVALID_HANDLE_VALUE ? in[pipe_write] : GetStdHandle(STD_INPUT_HANDLE);
+			start_info.dwFlags = STARTF_USESTDHANDLES;
+
+			char cwd[260];
+			GetCurrentDirectoryA(sizeof(cwd), cwd);
+
+			if (!CreateProcessA(nullptr, const_cast<LPSTR>(commandline.c_str()), nullptr, nullptr, TRUE, 0, environment, cwd, &start_info, &proc_info))
+			{
+				DWORD error = GetLastError();
+				char buffer[256];
+				FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+					nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+					buffer, (sizeof(buffer) / sizeof(buffer[0])), nullptr);
+				buffer[sizeof(buffer) - 1] = 0;
+
+				cbl::error("Failed to launch: %s", commandline.c_str());
+				cbl::error("Reason: %s", buffer);
+
+				safe_close_handles(in);
+				safe_close_handles(out);
+				safe_close_handles(err);
+				return nullptr;
+			}
+
+			cbl::log_verbose("Launched process #%d, handle #%d: %s", proc_info.dwProcessId, (uintptr_t)proc_info.hProcess, commandline.c_str());
+
+			if (stdin_buffer)
+			{
+				DWORD written;
+				WriteFile(in[pipe_write], stdin_buffer->data(), stdin_buffer->size(), &written, nullptr);
+			}
+
+			CloseHandle(proc_info.hThread);	// We don't care about the child process' main thread.
+
+			p = new process();
+			p->on_err = on_stderr;
+			p->on_out = on_stdout;
+			p->handle = proc_info.hProcess;
+			memcpy(p->in, in, sizeof(p->in));
+			memcpy(p->out, out, sizeof(p->out));
+			memcpy(p->err, err, sizeof(p->err));
+			return std::shared_ptr<process>(p);
 		};
-
-		if (stdin_buffer && !safe_create_pipe(in, true))
-		{
-			return nullptr;
-		}
-		if (on_stderr && !safe_create_pipe(err, false))
-		{
-			return nullptr;
-		}
-		if (on_stdout && !safe_create_pipe(out, false))
-		{
-			return nullptr;
-		}
-
-		PROCESS_INFORMATION proc_info = { 0 };
-		STARTUPINFO start_info = { 0 };
-		start_info.cb = sizeof(start_info);
-		start_info.hStdError = err[pipe_write] != INVALID_HANDLE_VALUE ? err[pipe_write] : GetStdHandle(STD_ERROR_HANDLE);
-		start_info.hStdOutput = out[pipe_write] != INVALID_HANDLE_VALUE ? out[pipe_write] : GetStdHandle(STD_OUTPUT_HANDLE);
-		start_info.hStdInput = in[pipe_read] != INVALID_HANDLE_VALUE ? in[pipe_write] : GetStdHandle(STD_INPUT_HANDLE);
-		start_info.dwFlags = STARTF_USESTDHANDLES;
-
-		char cwd[260];
-		GetCurrentDirectoryA(sizeof(cwd), cwd);
-
-		if (!CreateProcessA(nullptr, const_cast<LPSTR>(commandline), nullptr, nullptr, TRUE, 0, environment, cwd, &start_info, &proc_info))
-		{
-			DWORD error = GetLastError();
-			char buffer[256];
-			FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-				nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-				buffer, (sizeof(buffer) / sizeof(buffer[0])), nullptr);
-			buffer[sizeof(buffer) - 1] = 0;
-
-			cbl::error("Failed to launch: %s", commandline);
-			cbl::error("Reason: %s", buffer);
-
-			safe_close_handles(in);
-			safe_close_handles(out);
-			safe_close_handles(err);
-			return nullptr;
-		}
-
-		cbl::log_verbose("Launched process #%d, handle #%d: %s", proc_info.dwProcessId, (uintptr_t)proc_info.hProcess, commandline);
-
-		if (stdin_buffer)
-		{
-			DWORD written;
-			WriteFile(in[pipe_write], stdin_buffer->data(), stdin_buffer->size(), &written, nullptr);
-		}
-
-		CloseHandle(proc_info.hThread);	// We don't care about the child process' main thread.
-
-		p = new process();
-		p->on_err = on_stderr;
-		p->on_out = on_stdout;
-		p->handle = proc_info.hProcess;
-		memcpy(p->in, in, sizeof(p->in));
-		memcpy(p->out, out, sizeof(p->out));
-		memcpy(p->err, err, sizeof(p->err));
-		return std::shared_ptr<process>(p);
+		return kickoff;
 	}
 
 	int process::wait()

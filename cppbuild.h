@@ -40,6 +40,7 @@ namespace graph { struct action; };
 namespace cbl
 {
 	struct process;
+	class deferred_process;
 	typedef std::function<void(const void*, size_t)> pipe_output_callback;
 };
 
@@ -71,14 +72,14 @@ typedef std::pair<std::string, target_data> target;
 struct toolchain
 {
 	virtual void initialize(const configuration&) = 0;
-	virtual std::shared_ptr<cbl::process> invoke_compiler(
+	virtual cbl::deferred_process invoke_compiler(
 		const target& target,
 		const std::string& object_path,
 		const std::string& source_path,
 		const configuration&,
 		const cbl::pipe_output_callback& on_stderr,
 		const cbl::pipe_output_callback& on_stdout) = 0;
-	virtual std::shared_ptr<cbl::process> invoke_linker(
+	virtual cbl::deferred_process invoke_linker(
 		const target& target,
 		const string_vector& source_paths,
 		const configuration&,
@@ -167,3 +168,4 @@ std::pair<std::string, std::string> describe(target_map& targets, configuration_
 #include "detail/graph.inl"
 #include "detail/toolchain.inl"
 #include "detail/main.inl"
+#include "detail/enkiTS/src/TaskScheduler.cpp"

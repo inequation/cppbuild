@@ -4,6 +4,7 @@
 #include "../cppbuild.h"
 
 #include <mutex>
+#include "enkiTS/src/TaskScheduler.h"
 
 namespace graph
 {
@@ -118,6 +119,172 @@ namespace graph
 				abort();
 			}
 		}
+
+		enki::TaskScheduler g_scheduler;
+
+		using task_set_ptr = std::shared_ptr<enki::ITaskSet>;
+
+		struct build_context
+		{
+			const target& target;
+			const configuration& cfg;
+			std::shared_ptr<toolchain> tc;
+			const cbl::pipe_output_callback& on_stderr;
+			const cbl::pipe_output_callback& on_stdout;
+		};
+
+		task_set_ptr enqueue_build_tasks(build_context ctx, std::shared_ptr<action> root);
+
+		class build_task : public enki::ITaskSet
+		{
+		protected:
+			build_context ctx;
+			std::shared_ptr<action> root;
+		public:
+			cbl::deferred_process process;
+			int exit_code = -1;
+
+			build_task(build_context &context, std::shared_ptr<action> root_action, cbl::deferred_process work = nullptr)
+				: ctx(context)
+				, root(root_action)
+				, process(work)
+			{}
+
+			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+			{
+				if (process)
+				{
+					auto spawned = process();
+					if (spawned)
+					{
+						exit_code = spawned->wait();
+						if (exit_code != 0)
+						{
+							// FIXME: Conditionally cancel the build.
+						}
+					}
+				}
+			}
+		};
+
+		class build_task_with_deps : public build_task
+		{
+		protected:
+			void dispatch_subtasks_and_wait(enki::TaskSetPartition range, uint32_t threadnum)
+			{
+				// FIXME: Creating a ton of task sets is superfluous, we should create one task set and feed it arrays instead.
+				std::vector<std::shared_ptr<enki::ITaskSet>> subtasks;
+				subtasks.reserve(range.end - range.start);
+				for (uint32_t i = range.start; i < range.end; ++i)
+				{
+					subtasks.push_back(enqueue_build_tasks(ctx, root->inputs[i]));
+				}
+				// Issue the subtasks.
+				for (auto& t : subtasks)
+					g_scheduler.AddTaskSetToPipe(t.get());
+				// Wait for them to complete.
+				for (auto& t : subtasks)
+					g_scheduler.WaitforTask(t.get());
+			}
+
+		public:
+			build_task_with_deps(build_context &context, std::shared_ptr<action> root_action, cbl::deferred_process work = nullptr)
+				: build_task(context, root_action, work)
+			{}
+
+			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+			{
+				dispatch_subtasks_and_wait(range, threadnum);
+				// Run our own stuff.
+				build_task::ExecuteRange(range, threadnum);
+			}
+		};
+
+		class compile_task : public build_task
+		{
+		public:
+			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+			{
+				assert(root->outputs.size() == 1);
+				assert(root->inputs.size() == 1);
+				auto i = root->inputs[0];
+				assert(i->outputs.size() == 1);
+				assert(i->type == (action::action_type)cpp_action::source);
+
+				// FIXME: Find a more appropriate place for this mkdir.
+				cbl::fs::mkdir(cbl::path::get_directory(root->outputs[0].c_str()).c_str(), true);
+				
+				build_task::ExecuteRange(range, threadnum);
+			}
+
+			compile_task(build_context& context, std::shared_ptr<action> root)
+				: build_task(context, root,
+					context.tc->invoke_compiler(
+						context.target,
+						root->outputs[0],
+						root->inputs[0]->outputs[0],
+						context.cfg, context.on_stderr, context.on_stdout))
+			{}
+		};
+
+		class link_task : public build_task_with_deps
+		{
+		public:
+			link_task(build_context &context, std::shared_ptr<action> root)
+				: build_task_with_deps(context, root)
+			{
+				string_vector inputs;
+				for (auto i : root->inputs)
+				{
+					assert(i->type == (action::action_type)cpp_action::compile);
+					inputs.insert(inputs.begin(), i->outputs.begin(), i->outputs.end());
+				}
+				process = ctx.tc->invoke_linker(
+					ctx.target,
+					inputs,
+					ctx.cfg, ctx.on_stderr, ctx.on_stdout);
+			}
+		};
+
+		class generate_task : public build_task_with_deps
+		{
+		public:
+			using build_task_with_deps::build_task_with_deps;
+
+			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+			{
+				// Only run subtasks.
+				// TODO: Revise this if we ever need to actually spawn a process here.
+				dispatch_subtasks_and_wait(range, threadnum);
+			}
+		};
+
+		task_set_ptr enqueue_build_tasks(build_context ctx, std::shared_ptr<action> root)
+		{
+			if (!root)
+			{
+				// Empty graph, nothing to build.
+				return 0;
+			}
+			if (root->inputs.empty())
+			{
+				// This action is built and is probably a dependency up the tree.
+				return 0;
+			}
+			switch (root->type)
+			{
+			case cpp_action::link:
+				return std::make_shared<link_task>(ctx, root);
+			case cpp_action::compile:
+				return std::make_shared<compile_task>(ctx, root);
+			case cpp_action::generate:
+				return std::make_shared<generate_task>(ctx, root);
+			default:
+				assert(!"Unimplmented");
+				break;
+			}
+			return nullptr;
+		}
 	};
 
 	void cull_build_graph(std::shared_ptr<action>& root)
@@ -133,88 +300,18 @@ namespace graph
 		const cbl::pipe_output_callback& on_stderr,
 		const cbl::pipe_output_callback& on_stdout)
 	{
-		if (!root)
+		// FIXME: Move the task scheduler out of here.
+		detail::g_scheduler.Initialize();
+		detail::build_context ctx{ target, cfg, tc, on_stderr, on_stdout };
+		int exit_code = 0;
+		if (auto root_task = detail::enqueue_build_tasks(ctx, root))
 		{
-			// Empty graph, nothing to build.
-			return 0;
+			detail::g_scheduler.AddTaskSetToPipe(root_task.get());
+			detail::g_scheduler.WaitforTask(root_task.get());
+			exit_code = std::static_pointer_cast<detail::build_task>(root_task)->exit_code;
 		}
-		if (root->inputs.empty())
-		{
-			// This action is built and is probably a dependency up the tree.
-			return 0;
-		}
-		switch (root->type)
-		{
-		case cpp_action::link:
-			{
-				for (auto i : root->inputs)
-				{
-					// TODO: Collect child processes instead for parallel execution.
-					int exit_code = execute_build_graph(target, i, cfg, tc, on_stderr, on_stdout);
-					if (exit_code != 0)
-					{
-						return exit_code;
-					}
-				}
-
-				string_vector inputs;
-				for (auto i : root->inputs)
-				{
-					assert(i->type == (action::action_type)cpp_action::compile);
-					inputs.insert(inputs.begin(), i->outputs.begin(), i->outputs.end());
-				}
-				if (auto p = tc->invoke_linker(target, inputs, cfg, on_stderr, on_stdout))
-				{
-					int exit_code = p->wait();
-					if (exit_code != 0)
-					{
-						return exit_code;
-					}
-				}
-				else
-				{
-					return 1;
-				}
-			}
-			break;
-		case cpp_action::compile:
-			{
-				assert(root->outputs.size() == 1);
-				assert(root->inputs.size() == 1);
-				auto i = root->inputs[0];
-				assert(i->outputs.size() == 1);
-				assert(i->type == (action::action_type)cpp_action::source);
-				// FIXME: Find a more appropriate place for this mkdir.
-				cbl::fs::mkdir(cbl::path::get_directory(root->outputs[0].c_str()).c_str(), true);
-				if (auto p = tc->invoke_compiler(target, root->outputs[0], i->outputs[0], cfg, on_stderr, on_stdout))
-				{
-					int exit_code = p->wait();
-					if (exit_code != 0)
-					{
-						return exit_code;
-					}
-				}
-				else
-				{
-					return 1;
-				}
-			}
-			break;
-		case cpp_action::generate:
-			for (auto i : root->inputs)
-			{
-				int exit_code = execute_build_graph(target, i, cfg, tc, on_stderr, on_stdout);
-				if (exit_code != 0)
-				{
-					return exit_code;
-				}
-			}
-			break;
-		default:
-			assert(!"Unimplmented");
-			break;
-		}
-		return 0;
+		detail::g_scheduler.WaitforAllAndShutdown();
+		return exit_code;
 	}
 
 	void clean_build_graph_outputs(std::shared_ptr<action> root)

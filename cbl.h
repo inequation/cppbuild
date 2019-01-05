@@ -89,6 +89,14 @@ namespace cbl
 		};
 	};
 
+	// Use inheritance so that forward declarations work.
+	class deferred_process : public std::function<std::shared_ptr<struct process>()>
+	{
+		using base_type = std::function<std::shared_ptr<struct process>()>;
+	public:
+		using base_type::base_type;
+	};
+
 	struct process
 	{
 		pipe_output_callback on_out, on_err;
@@ -101,10 +109,20 @@ namespace cbl
 		process();
 		enum { pipe_read, pipe_write };
 	public:
-		static std::shared_ptr<process> start_async(const char *commandline,
+		// Sets up a process without actually launching it. The process is launched in a detached state (i.e. any waiting needs to be made explicit).
+		static deferred_process start_deferred(const char *commandline,
 			pipe_output_callback on_stderr = nullptr,
 			pipe_output_callback on_stdout = nullptr,
 			const std::vector<uint8_t> *stdin_buffer = nullptr, void *environment = nullptr);
+
+		// This is equivalent to calling start_deferred() and executing the return value.
+		static inline std::shared_ptr<process> start_async(const char *commandline,
+			pipe_output_callback on_stderr = nullptr,
+			pipe_output_callback on_stdout = nullptr,
+			const std::vector<uint8_t> *stdin_buffer = nullptr, void *environment = nullptr)
+		{
+			return start_deferred(commandline, on_stderr, on_stdout, stdin_buffer, environment)();
+		}
 
 		// Explicitly gives up any control over the process and lets it run in the background.
 		void detach();
