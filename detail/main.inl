@@ -334,7 +334,7 @@ int main(int argc, char *argv[])
 	// Basic initialization: logging and task scheduler.
 	cbl::detail::rotate_logs();
 	cbl::scheduler.Initialize();	// FIXME: Configurable thread count.
-	atexit([]() { cbl::scheduler.WaitforAllAndShutdown(); });
+	struct scoped_cleanup { ~scoped_cleanup() { cbl::scheduler.WaitforAllAndShutdown(); } } cleanup;
 
 	toolchain_map toolchains;
 	discover_toolchains(toolchains);
