@@ -172,6 +172,7 @@ namespace cbl
 
 	enum class severity : uint8_t
 	{
+		debug,
 		verbose,
 		info,
 		warning,
@@ -187,6 +188,8 @@ namespace cbl
 	void error(const char* fmt, ...);
 	// Alias for log<verbose>(...).
 	void log_verbose(const char* fmt, ...);
+	// Alias for log<debug>(...).
+	void log_debug(const char* fmt, ...);
 
 	// Wraps a single string in a vector.
 	string_vector vwrap(const std::string& s);

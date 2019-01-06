@@ -374,14 +374,14 @@ namespace cbl
 			atexit([]() { fclose(log_file_stream); });
 		}
 
-		static constexpr severity compiled_log_level = severity::verbose;	// FIXME: Put in config.
-		static severity runtime_log_level = severity::	// FIXME: Put in config.
+		static constexpr severity compiled_log_level = severity::	// FIXME: Put in config.
 #if _DEBUG
-			verbose
+			debug
 #else
-			info
+			verbose
 #endif
 			;
+		static severity runtime_log_level = static_cast<severity>((int)compiled_log_level + 1);	// FIXME: Put in config.
 
 		// Logging implementation. Thread safe at the cost of a mutex lock around the actual buffer emission.
 		template<severity severity>
@@ -421,6 +421,7 @@ namespace cbl
 				}
 				static constexpr const char *severity_tags[] =
 				{
+					"[Debug]",
 					"[Verbose]",
 					"[Info]",
 					"[Warning]",
@@ -464,6 +465,14 @@ namespace cbl
 		va_list va;
 		va_start(va, fmt);
 		detail::log<s>( fmt, va);
+		va_end(va);
+	}
+
+	void log_debug(const char *fmt, ...)
+	{
+		va_list va;
+		va_start(va, fmt);
+		detail::log<severity::debug>(fmt, va);
 		va_end(va);
 	}
 
@@ -513,6 +522,7 @@ namespace cbl
 			case severity::warning: warning(fmt, label); return;
 			case severity::info: info(fmt, label); return;
 			case severity::verbose: log_verbose(fmt, label); return;
+			case severity::debug: log_debug(fmt, label); return;
 			default: assert(!"Unknown severity"); info(fmt, label); return;
 			}
 		}
@@ -527,6 +537,7 @@ namespace cbl
 			case severity::warning: warning(fmt, label, float(duration) * 0.000001f); return;
 			case severity::info: info(fmt, label, float(duration) * 0.000001f); return;
 			case severity::verbose: log_verbose(fmt, label, float(duration) * 0.000001f); return;
+			case severity::debug: log_debug(fmt, label, float(duration) * 0.000001f); return;
 			default: assert(!"Unknown severity"); info(fmt, label, float(duration) * 0.000001f); return;
 			}
 		}

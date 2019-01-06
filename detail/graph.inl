@@ -60,13 +60,13 @@ namespace graph
 				if (input_timestamp > 0 && (!input || input_timestamp < root_timestamp) && self_timestamp > 0)
 				{
 					if (input)
-						cbl::log_verbose("Culling input type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
+						cbl::log_debug("Culling INPUT type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
 							input->type, input->outputs[0].c_str(), action->outputs[0].c_str(), self_timestamp.load(), input_timestamp, root_timestamp);
 					input = nullptr;
 				}
 				else
 				{
-					cbl::log_verbose("Bumping self timestamp from input type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
+					cbl::log_debug("Bumping self timestamp from input type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
 						input->type, input->outputs[0].c_str(), action->outputs[0].c_str(), self_timestamp.load(), input_timestamp, root_timestamp);
 					// Keep own timestamp up to date with inputs.
 					if (input_timestamp == 0 || self_timestamp == 0)
@@ -126,7 +126,7 @@ namespace graph
 				erase_null_inputs(action->inputs);
 				if (action->inputs.empty() && root_timestamp != 0)
 				{
-					cbl::log_verbose("Culling action type %d %s (%d inputs remaining)", action->type, action->outputs[0].c_str(), action->inputs.size());
+					cbl::log_debug("Culling ACTION type %d %s (%d inputs remaining)", action->type, action->outputs[0].c_str(), action->inputs.size());
 					action = nullptr;
 				}
 				else
@@ -500,29 +500,29 @@ namespace graph
 													on_success(key.c_str(), vec[i].first.c_str(), vec[i].second);
 											}
 											else
-												cbl::log_verbose("[CacheSer] Failed to serialize value time stamp at index %d, key %s", i, key.c_str());
+												cbl::log_debug("[CacheSer] Failed to serialize value time stamp at index %d, key %s", i, key.c_str());
 										}
 										else
-											cbl::log_verbose("[CacheSer] Failed to serialize value string at index %d, key %s", i, key.c_str());
+											cbl::log_debug("[CacheSer] Failed to serialize value string at index %d, key %s", i, key.c_str());
 									}
 								}
 								else
-									cbl::log_verbose("[CacheSer] Failed to serialize value vector length for key %s", key.c_str());
+									cbl::log_debug("[CacheSer] Failed to serialize value vector length for key %s", key.c_str());
 							}
 							else
-								cbl::log_verbose("[CacheSer] Failed to serialize key string");
+								cbl::log_debug("[CacheSer] Failed to serialize key string");
 							if (key_count-- <= 1)
 								break;
 						} while (success);
 					}
 					else
-						cbl::log_verbose("[CacheSer] Failed to read cache key count");
+						cbl::log_debug("[CacheSer] Failed to read cache key count");
 				}
 				else
-					cbl::log_verbose("[CacheSer] Version number mismatch (expected %d, got %d)", cache_version, v);
+					cbl::log_debug("[CacheSer] Version number mismatch (expected %d, got %d)", cache_version, v);
 			}
 			else
-				cbl::log_verbose("[CacheSer] Magic number mismatch (expected %08X, got %08X)", cache_magic.i, m.i);
+				cbl::log_debug("[CacheSer] Magic number mismatch (expected %08X, got %08X)", cache_magic.i, m.i);
 		}
 
 		std::string get_cache_path(const target &target, const configuration& cfg)
