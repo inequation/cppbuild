@@ -149,8 +149,7 @@ struct msvc : public toolchain
 		};
 		cmdline += " " + source;
 		
-		auto p = cbl::process::start_async(cmdline.c_str(), append_to_buffer, [](const void *, size_t) {});
-		if (p && 0 == p->wait())
+		if (0 == cbl::process::start_sync(cmdline.c_str(), append_to_buffer, [](const void *, size_t) {}))
 		{
 			constexpr const char needle[] = "Note: including file: ";
 			const size_t needle_length = strlen(needle);
@@ -307,9 +306,8 @@ protected:
 			buffer.insert(buffer.end(), (const char *)data, ((const char *)data) + byte_count);
 		};
 
-		auto proc = cbl::process::start_async(path, append_to_buffer, [](const void *, size_t) {});
-
-		if (0 == proc->wait() && 0 == strncmp(buffer.c_str(), header, sizeof(header) - 1))
+		if (0 == cbl::process::start_sync(path, append_to_buffer, [](const void *, size_t) {}) &&
+			0 == strncmp(buffer.c_str(), header, sizeof(header) - 1))
 			v.parse(buffer.c_str() + sizeof(header));
 		else
 			memset(&v, 0, sizeof(v));

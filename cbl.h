@@ -1,5 +1,7 @@
 #pragma once
 
+#include "detail/enkiTS/src/TaskScheduler.h"
+
 typedef std::vector<std::string> string_vector;
 
 namespace cbl
@@ -92,6 +94,7 @@ namespace cbl
 	// Use inheritance so that forward declarations work.
 	class deferred_process : public std::function<std::shared_ptr<struct process>()>
 	{
+		// Forward the constructor.
 		using base_type = std::function<std::shared_ptr<struct process>()>;
 	public:
 		using base_type::base_type;
@@ -109,19 +112,38 @@ namespace cbl
 		process();
 		enum { pipe_read, pipe_write };
 	public:
-		// Sets up a process without actually launching it. The process is launched in a detached state (i.e. any waiting needs to be made explicit).
+		// Sets up a process without actually launching it. Returns a callable that returns a
+		// shared_ptr<process>. When that callable is executed, the process is launched in a detached
+		// state (i.e. it will not block by default; any waiting needs to be made explicit).
 		static deferred_process start_deferred(const char *commandline,
 			pipe_output_callback on_stderr = nullptr,
 			pipe_output_callback on_stdout = nullptr,
 			const std::vector<uint8_t> *stdin_buffer = nullptr, void *environment = nullptr);
 
-		// This is equivalent to calling start_deferred() and executing the return value.
+		// Launches a process immediately in an asynchronous manner (i.e. it will not block by default;
+		// any waiting needs to be made explicit). This is equivalent to calling start_deferred() and
+		// executing the returned callable.
 		static inline std::shared_ptr<process> start_async(const char *commandline,
 			pipe_output_callback on_stderr = nullptr,
 			pipe_output_callback on_stdout = nullptr,
 			const std::vector<uint8_t> *stdin_buffer = nullptr, void *environment = nullptr)
 		{
 			return start_deferred(commandline, on_stderr, on_stdout, stdin_buffer, environment)();
+		}
+
+		// Launches a process immediately in a synchronous manner (i.e. it will block until the process
+		// finishes). This is equivalent to calling start_async() and waiting for the process. Returns
+		// -1 if the process failed to spawn (e.g. because the executable was inaccessible).
+		static inline int start_sync(const char *commandline,
+			pipe_output_callback on_stderr = nullptr,
+			pipe_output_callback on_stdout = nullptr,
+			const std::vector<uint8_t> *stdin_buffer = nullptr, void *environment = nullptr)
+		{
+			auto p = start_async(commandline, on_stderr, on_stdout, stdin_buffer, environment);
+			if (p)
+				return p->wait();
+			else
+				return -1;
 		}
 
 		// Explicitly gives up any control over the process and lets it run in the background.
@@ -198,6 +220,34 @@ namespace cbl
 			const char *label;
 			severity s;
 		};
+	}
+
+	// Multithreaded task scheduler.
+	enki::TaskScheduler scheduler;
+
+	// Helper construct for parallelizing trivial for loops. Loop body is a callable with the following
+	// signature: void loop_body(uint32_t index);
+	template <typename loop_body>
+	void parallel_for(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting = 1)
+	{
+		class loop_task : public enki::ITaskSet
+		{
+			loop_body body;
+		public:
+			loop_task(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting)
+				: enki::ITaskSet(set_size, min_size_for_splitting)
+				, body(callable)
+			{}
+
+			virtual void ExecuteRange(TaskSetPartition range, uint32_t threadnum) override
+			{
+				for (auto i = range.start; i < range.end; ++i)
+					body(i);
+			}
+		};
+		loop_task loop(callable);
+		scheduler.AddTaskSetToPipe(&loop);
+		scheduler.WaitforTask(&loop);
 	}
 }
 

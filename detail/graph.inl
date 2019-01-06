@@ -4,7 +4,6 @@
 #include "../cppbuild.h"
 
 #include <mutex>
-#include "enkiTS/src/TaskScheduler.h"
 
 namespace graph
 {
@@ -120,8 +119,6 @@ namespace graph
 			}
 		}
 
-		enki::TaskScheduler g_scheduler;
-
 		using task_set_ptr = std::shared_ptr<enki::ITaskSet>;
 
 		struct build_context
@@ -172,7 +169,7 @@ namespace graph
 		protected:
 			void dispatch_subtasks_and_wait(enki::TaskSetPartition range, uint32_t threadnum)
 			{
-				// FIXME: Creating a ton of task sets is superfluous, we should create one task set and feed it arrays instead.
+				// FIXME: Creating a ton of task sets is excessive, we should create one task set and feed it arrays instead.
 				std::vector<std::shared_ptr<enki::ITaskSet>> subtasks;
 				subtasks.reserve(range.end - range.start);
 				for (uint32_t i = range.start; i < range.end; ++i)
@@ -181,10 +178,10 @@ namespace graph
 				}
 				// Issue the subtasks.
 				for (auto& t : subtasks)
-					g_scheduler.AddTaskSetToPipe(t.get());
+					cbl::scheduler.AddTaskSetToPipe(t.get());
 				// Wait for them to complete.
 				for (auto& t : subtasks)
-					g_scheduler.WaitforTask(t.get());
+					cbl::scheduler.WaitforTask(t.get());
 			}
 
 		public:
@@ -203,6 +200,15 @@ namespace graph
 		class compile_task : public build_task
 		{
 		public:
+			compile_task(build_context& context, std::shared_ptr<action> root)
+				: build_task(context, root,
+					context.tc->invoke_compiler(
+						context.target,
+						root->outputs[0],
+						root->inputs[0]->outputs[0],
+						context.cfg, context.on_stderr, context.on_stdout))
+			{}
+
 			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
 			{
 				assert(root->outputs.size() == 1);
@@ -216,15 +222,6 @@ namespace graph
 				
 				build_task::ExecuteRange(range, threadnum);
 			}
-
-			compile_task(build_context& context, std::shared_ptr<action> root)
-				: build_task(context, root,
-					context.tc->invoke_compiler(
-						context.target,
-						root->outputs[0],
-						root->inputs[0]->outputs[0],
-						context.cfg, context.on_stderr, context.on_stdout))
-			{}
 		};
 
 		class link_task : public build_task_with_deps
@@ -300,17 +297,14 @@ namespace graph
 		const cbl::pipe_output_callback& on_stderr,
 		const cbl::pipe_output_callback& on_stdout)
 	{
-		// FIXME: Move the task scheduler out of here.
-		detail::g_scheduler.Initialize();
 		detail::build_context ctx{ target, cfg, tc, on_stderr, on_stdout };
 		int exit_code = 0;
 		if (auto root_task = detail::enqueue_build_tasks(ctx, root))
 		{
-			detail::g_scheduler.AddTaskSetToPipe(root_task.get());
-			detail::g_scheduler.WaitforTask(root_task.get());
+			cbl::scheduler.AddTaskSetToPipe(root_task.get());
+			cbl::scheduler.WaitforTask(root_task.get());
 			exit_code = std::static_pointer_cast<detail::build_task>(root_task)->exit_code;
 		}
-		detail::g_scheduler.WaitforAllAndShutdown();
 		return exit_code;
 	}
 

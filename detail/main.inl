@@ -331,7 +331,10 @@ void print_version()
 
 int main(int argc, char *argv[])
 {
+	// Basic initialization: logging and task scheduler.
 	cbl::detail::rotate_logs();
+	cbl::scheduler.Initialize();	// FIXME: Configurable thread count.
+	atexit([]() { cbl::scheduler.WaitforAllAndShutdown(); });
 
 	toolchain_map toolchains;
 	discover_toolchains(toolchains);

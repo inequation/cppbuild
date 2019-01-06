@@ -110,8 +110,7 @@ struct gcc : public toolchain
 		};
 		cmdline += " " + source;
 		
-		auto p = cbl::process::start_async(cmdline.c_str(), append_to_buffer, append_to_buffer);
-		if (p && 0 == p->wait())
+		if (0 == cbl::process::start_sync(cmdline.c_str(), append_to_buffer, append_to_buffer))
 		{
 			buffer.push_back(0);	// Ensure null termination, so that we may treat data() as C string.
 			const char *s = strchr((char *)buffer.data(), ':');
@@ -205,10 +204,8 @@ protected:
 			buffer.insert(buffer.end(), (const char *)data, ((const char *)data) + byte_count);
 		};
 
-		auto proc = cbl::process::start_async((std::string(path) + " -v").c_str(), append_to_buffer, append_to_buffer);
-
 		memset(&v, 0, sizeof(v));
-		if (0 == proc->wait())
+		if (0 == cbl::process::start_sync((std::string(path) + " -v").c_str(), append_to_buffer, append_to_buffer))
 		{
 			if (const char *vstr = strstr(buffer.c_str(), header))
 				v.parse(vstr + sizeof(header) - 1);
