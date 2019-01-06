@@ -22,7 +22,7 @@ C++ compiles to native executables. It stands to reason that in order to achieve
 
 Therefore, it is my goal to be able to bootstrap a first-generation `build`/`build.exe` binary with a trivial compiler invocation, such as this:
 ```
-$ g++ -o build build.cpp && ./build
+$ g++ -o build -pthread build.cpp && ./build
 ```
 Or this, on Windows, in a Visual Studio Developer Command Prompt:
 ```

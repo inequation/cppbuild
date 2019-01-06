@@ -4,13 +4,18 @@
 #include "../cppbuild.h"
 
 #include <mutex>
+#include <atomic>
 
 namespace graph
 {
 	namespace detail
 	{
-		using cache_map_key = std::pair<std::string, platform>;
+		using cache_map_key = std::pair<target, configuration>;
 	}
+}
+bool operator==(const graph::detail::cache_map_key &a, const graph::detail::cache_map_key &b)
+{
+	return a.first.first == b.first.first && a.second.first == b.second.first;
 }
 namespace std
 {
@@ -21,57 +26,80 @@ namespace std
 			using namespace cbl;
 			hash<string> string_hasher;
 			hash<uint8_t> byte_hasher;
-			return combine_hash(string_hasher(k.first), byte_hasher(static_cast<uint8_t>(k.second)));
+			return combine_hash(string_hasher(k.first.first), byte_hasher(static_cast<uint8_t>(k.second.second.platform)));
 		}
 	};
 }
 
 namespace graph
 {
-	std::shared_ptr<action> generate_cpp_build_graph(const target& target, const configuration& cfg, std::shared_ptr<toolchain> tc)
-	{
-		std::shared_ptr<cpp_action> root = std::make_shared<cpp_action>();
-		root->type = (action::action_type)cpp_action::link;
-		auto sources = target.second.sources();
-		root->outputs.push_back(target.second.output);
-		for (auto& tu : sources)
-		{
-			auto action = tc->generate_compile_action_for_cpptu(target, tu, cfg);
-			root->inputs.emplace_back(action);
-		}
-		return std::static_pointer_cast<action, cpp_action>(root);
-	}
-
 	namespace detail
 	{
+		template <typename T>
+		inline void atomic_max(std::atomic<T>& max, T const& value) noexcept
+		{
+			T prev_value = max;
+			while (prev_value < value && !max.compare_exchange_weak(prev_value, value));
+		}
+
 		void cull_action(std::shared_ptr<action>& action, uint64_t root_timestamp)
 		{
-			uint64_t self_timestamp = action->get_oldest_output_timestamp();
+			std::atomic_uint64_t self_timestamp = action->get_oldest_output_timestamp();
+			auto update_self_timestamp = [&self_timestamp](uint64_t input_timestamp)
+			{
+				if (input_timestamp == 0 || self_timestamp == 0)
+					self_timestamp = 0;
+				else
+					atomic_max(self_timestamp, input_timestamp);
+			};
+
+			auto cull_input = [&](std::shared_ptr<graph::action> &input, uint64_t stamp_if_missing = 0)
+			{
+				uint64_t input_timestamp = input ? input->get_oldest_output_timestamp() : stamp_if_missing;
+				// Only cull inputs if we exist.
+				if (input_timestamp > 0 && (!input || input_timestamp < root_timestamp) && self_timestamp > 0)
+				{
+					if (input)
+						cbl::log_verbose("Culling input type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
+							input->type, input->outputs[0].c_str(), action->outputs[0].c_str(), self_timestamp.load(), input_timestamp, root_timestamp);
+					input = nullptr;
+				}
+				else
+				{
+					cbl::log_verbose("Bumping self timestamp from input type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
+						input->type, input->outputs[0].c_str(), action->outputs[0].c_str(), self_timestamp.load(), input_timestamp, root_timestamp);
+					// Keep own timestamp up to date with inputs.
+					if (input_timestamp == 0 || self_timestamp == 0)
+						self_timestamp = 0;
+					else
+						atomic_max(self_timestamp, input_timestamp);
+				}
+			};
+
+			auto erase_null_inputs = [](std::vector<std::shared_ptr<graph::action>> &inputs)
+			{
+				for (int i = inputs.size() - 1; i >= 0; --i)
+				{
+					if (nullptr == inputs[i])
+						inputs.erase(inputs.begin() + i);
+				}
+				inputs.shrink_to_fit();
+			};
+
 			switch (action->type)
 			{
 			case cpp_action::include:
 				assert(!"We ought to be culled by the parent");
 				return;
 			case cpp_action::source:
-				for (int i = action->inputs.size() - 1; i >= 0; --i)
+				cbl::parallel_for([&](uint32_t i)
 				{
+					uint64_t start = cbl::time::now();
 					auto& input = action->inputs[i];
 					switch (input->type)
 					{
 					case cpp_action::include:
-					{
-						uint64_t include_timestamp = input->get_oldest_output_timestamp();
-						if (include_timestamp < root_timestamp)
-						{
-							cbl::log_verbose("Culling input type %d %s for action %s", input->type, input->outputs[0].c_str(), action->outputs[0].c_str());
-							action->inputs.erase(action->inputs.begin() + i);
-						}
-						else
-						{
-							// Keep own timestamp up to date with includes.
-							self_timestamp = (self_timestamp == 0 || include_timestamp == 0) ? 0 : std::max(self_timestamp, include_timestamp);
-						}
-					}
+						cull_input(input);
 					break;
 					case cpp_action::source:
 						assert(!"Source actions may only have includes as input");
@@ -80,32 +108,25 @@ namespace graph
 						assert(!"Unimplmented");
 						abort();
 					}
-				}
+				},
+					action->inputs.size(), 100);
+				erase_null_inputs(action->inputs);
 				action->output_timestamps[0] = self_timestamp;
 				break;
 			case cpp_action::compile:
 			case cpp_action::link:
-				for (int i = action->inputs.size() - 1; i >= 0; --i)
-				{
-					auto& input = action->inputs[i];
-					cull_action(input, root_timestamp);
-					uint64_t input_timestamp = input ? input->get_oldest_output_timestamp() : ~0u;
-					// Only cull inputs if we exist.
-					if (self_timestamp > 0 && input_timestamp > 0 && (!input || input_timestamp < root_timestamp))
+				cbl::parallel_for([&](uint32_t i)
 					{
-						if (input)
-						cbl::log_verbose("Culling input type %d %s for action %s", input->type, input->outputs[0].c_str(), action->outputs[0].c_str());
-						action->inputs.erase(action->inputs.begin() + i);
-					}
-					else
-					{
-						// Keep own timestamp up to date with includes.
-						self_timestamp = (self_timestamp == 0 || input_timestamp == 0) ? 0 : std::max(self_timestamp, input_timestamp);
-					}
-				}
+						uint64_t start = cbl::time::now();
+						auto& input = action->inputs[i];
+						cull_action(input, root_timestamp);
+						cull_input(input, ~0u);
+					},
+					action->inputs.size(), 1);
+				erase_null_inputs(action->inputs);
 				if (action->inputs.empty() && root_timestamp != 0)
 				{
-					cbl::log_verbose("Culling action type %d %s", action->type, action->outputs[0].c_str());
+					cbl::log_verbose("Culling action type %d %s (%d inputs remaining)", action->type, action->outputs[0].c_str(), action->inputs.size());
 					action = nullptr;
 				}
 				else
@@ -180,8 +201,15 @@ namespace graph
 				for (auto& t : subtasks)
 					cbl::scheduler.AddTaskSetToPipe(t.get());
 				// Wait for them to complete.
+				int dep_exit_code = 0;
 				for (auto& t : subtasks)
+				{
 					cbl::scheduler.WaitforTask(t.get());
+					// Propagate the firts non-success exit code.
+					if (dep_exit_code == 0)
+						dep_exit_code = std::static_pointer_cast<build_task_with_deps>(t)->exit_code;
+				}
+				exit_code = dep_exit_code;
 			}
 
 		public:
@@ -192,8 +220,9 @@ namespace graph
 			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
 			{
 				dispatch_subtasks_and_wait(range, threadnum);
-				// Run our own stuff.
-				build_task::ExecuteRange(range, threadnum);
+				if (exit_code == 0)
+					// Dependencies ran correctly, run our own stuff.
+					build_task::ExecuteRange(range, threadnum);
 			}
 		};
 
@@ -284,6 +313,20 @@ namespace graph
 		}
 	};
 
+	std::shared_ptr<action> generate_cpp_build_graph(const target& target, const configuration& cfg, std::shared_ptr<toolchain> tc)
+	{
+		std::shared_ptr<cpp_action> root = std::make_shared<cpp_action>();
+		root->type = (action::action_type)cpp_action::link;
+		auto sources = target.second.sources();
+		root->outputs.push_back(target.second.output);
+		// Presize the array for safe parallel writes to it.
+		root->inputs.resize(sources.size());
+		cbl::parallel_for([&](uint32_t i)
+			{ root->inputs[i] = tc->generate_compile_action_for_cpptu(target, sources[i], cfg); },
+			sources.size(), 100);
+		return std::static_pointer_cast<action, cpp_action>(root);
+	}
+	
 	void cull_build_graph(std::shared_ptr<action>& root)
 	{
 		uint64_t root_timestamp = root->get_oldest_output_timestamp();
@@ -434,7 +477,7 @@ namespace graph
 						{
 							if (key_it != cache.end())
 							{
-								key = key_it->first;
+								key = key_it++->first;
 							}
 							success = serialize_str(key);
 							if (success)
@@ -490,15 +533,15 @@ namespace graph
 		}
 
 		static std::unordered_map<cache_map_key, timestamp_cache> cache_map;
+		static std::mutex cache_mutex;
 
 		timestamp_cache& find_or_create_cache(const target &target, const configuration& cfg)
 		{
 			using namespace cbl;
 
-			static std::mutex mutex;
-			std::lock_guard<std::mutex> _(mutex);
+			std::lock_guard<std::mutex> _(cache_mutex);
 
-			auto key = std::make_pair(target.first, cfg.second.platform);
+			auto key = std::make_pair(target, cfg);
 			auto it = cache_map.find(key);
 			if (it == cache_map.end())
 			{
@@ -517,24 +560,35 @@ namespace graph
 			}
 			return it->second;
 		}
+
+		void for_each_cache(std::function<void(const cache_map_key &, timestamp_cache &)> callback)
+		{
+			std::lock_guard<std::mutex> _(cache_mutex);
+			for (auto &pair : cache_map)
+			{
+				callback(pair.first, pair.second);
+			}
+		}
 	};
 
-	void save_timestamp_cache(const target &target, const configuration& cfg)
+	void save_timestamp_caches()
 	{
 		using namespace cbl;
 
-		auto& cache = detail::find_or_create_cache(target, cfg);
-		std::string cache_path = detail::get_cache_path(target, cfg);
-		fs::mkdir(path::get_directory(cache_path.c_str()).c_str(), true);
-		if (FILE *serialized = fopen(cache_path.c_str(), "wb"))
+		detail::for_each_cache([](const detail::cache_map_key &key, timestamp_cache &cache)
 		{
-			detail::serialize_cache_items<detail::fwrite_wrapper, nullptr>(cache, serialized);
-			fclose(serialized);
-		}
-		else
-		{
-			log_verbose("Failed to open timestamp cache for writing to %s", cache_path.c_str());
-		}
+			std::string cache_path = detail::get_cache_path(key.first, key.second);
+			fs::mkdir(path::get_directory(cache_path.c_str()).c_str(), true);
+			if (FILE *serialized = fopen(cache_path.c_str(), "wb"))
+			{
+				detail::serialize_cache_items<detail::fwrite_wrapper, nullptr>(cache, serialized);
+				fclose(serialized);
+			}
+			else
+			{
+				log_verbose("Failed to open timestamp cache for writing to %s", cache_path.c_str());
+			}
+		});
 	}
 
 	bool query_dependency_cache(const target &target, const configuration& cfg, const std::string& source, std::function<void(const std::string &)> push_dep)

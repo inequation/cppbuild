@@ -173,6 +173,8 @@ void cull_build(std::shared_ptr<graph::action>& root)
 	graph::cull_build_graph(root);
 	cbl::info("Build graph after culling:");
 	dump_graph(std::static_pointer_cast<graph::cpp_action>(root));
+
+	graph::save_timestamp_caches();
 }
 
 int execute_build(const target& target, std::shared_ptr<graph::action> root, const configuration& cfg, std::shared_ptr<toolchain> tc)

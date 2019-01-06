@@ -149,7 +149,8 @@ struct msvc : public toolchain
 		};
 		cmdline += " " + source;
 		
-		if (0 == cbl::process::start_sync(cmdline.c_str(), append_to_buffer, [](const void *, size_t) {}))
+		int exit_code = cbl::process::start_sync(cmdline.c_str(), append_to_buffer, [](const void *, size_t) {});
+		if (exit_code == 0)
 		{
 			constexpr const char needle[] = "Note: including file: ";
 			const size_t needle_length = strlen(needle);
@@ -184,8 +185,11 @@ struct msvc : public toolchain
 			}
 			graph::insert_dependency_cache(target, cfg, source, deps);
 		}
-
-		graph::save_timestamp_cache(target, cfg);
+		else
+		{
+			// FIXME: Find a way to report this.
+			cbl::error("Dependency generation for %s failed with code %d", source.c_str(), exit_code);
+		}
 	}
 
 	std::shared_ptr<graph::action> generate_compile_action_for_cpptu(const target& target, const std::string& tu_path, const configuration& cfg) override

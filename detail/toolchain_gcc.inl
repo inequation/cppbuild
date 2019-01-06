@@ -157,8 +157,6 @@ struct gcc : public toolchain
 			}
 			graph::insert_dependency_cache(target, cfg, source, deps);
 		}
-
-		graph::save_timestamp_cache(target, cfg);
 	}
 
 	std::shared_ptr<graph::action> generate_compile_action_for_cpptu(const target& target, const std::string& tu_path, const configuration& cfg) override

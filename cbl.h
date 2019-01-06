@@ -228,7 +228,7 @@ namespace cbl
 	// Helper construct for parallelizing trivial for loops. Loop body is a callable with the following
 	// signature: void loop_body(uint32_t index);
 	template <typename loop_body>
-	void parallel_for(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting = 1)
+	void parallel_for(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting_to_threads = 1)
 	{
 		class loop_task : public enki::ITaskSet
 		{
@@ -245,7 +245,7 @@ namespace cbl
 					body(i);
 			}
 		};
-		loop_task loop(callable);
+		loop_task loop(callable, set_size, min_size_for_splitting_to_threads);
 		scheduler.AddTaskSetToPipe(&loop);
 		scheduler.WaitforTask(&loop);
 	}
