@@ -238,6 +238,8 @@ namespace cbl
 			if (mem == MAP_FAILED)
 				return false;
 
+			cbl::scoped_guard cleanup([mem, s]() { munmap(mem, s.st_size); });
+
 			int fd_to = open(new_path, O_CREAT | O_WRONLY | (!!(flags & overwrite) ? O_TRUNC : 0), 0666);
 			if (fd_to < 0)
 				return false;
@@ -318,114 +320,128 @@ namespace cbl
 	process::process()
 	{}
 
-	std::shared_ptr<process> process::start_async(
-		const char *commandline,
+	deferred_process process::start_deferred(
+		const char *not_owned_commandline,
 		pipe_output_callback on_stderr,
 		pipe_output_callback on_stdout,
 		const std::vector<uint8_t> *stdin_buffer, void *environment)
 	{
-		process *p = nullptr;
-		auto safe_close_pipes = [](int p[2])
+		std::string commandline = not_owned_commandline;
+		// FIXME: Lifetime of callbacks, buffer & environment?
+		auto kickoff = [=]()->std::shared_ptr<process>
 		{
-			if (p[pipe_write] != -1)
-				close(p[pipe_write]);
-			if (p[pipe_read] != -1)
-				close(p[pipe_read]);
-		};
-
-		int in[2] = { -1, -1 };
-		int out[2] = { -1, -1 };
-		int err[2] = { -1, -1 };
-
-		auto safe_create_pipe = [&](int p[2], bool inherit_write) -> bool
-		{
-			if (pipe2(p, O_NONBLOCK) < 0)
+			process *p = nullptr;
+			auto safe_close_pipes = [](int p[2])
 			{
+				if (p[pipe_write] != -1)
+					close(p[pipe_write]);
+				if (p[pipe_read] != -1)
+					close(p[pipe_read]);
+			};
+
+			int in[2] = { -1, -1 };
+			int out[2] = { -1, -1 };
+			int err[2] = { -1, -1 };
+
+			auto safe_create_pipe = [&](int p[2], bool inherit_write) -> bool
+			{
+				if (pipe2(p, O_NONBLOCK) < 0)
+				{
+					safe_close_pipes(in);
+					safe_close_pipes(err);
+					safe_close_pipes(out);
+					return false;
+				}
+				return true;
+			};
+
+			if (stdin_buffer && !safe_create_pipe(in, true))
+			{
+				return nullptr;
+			}
+			if (on_stderr && !safe_create_pipe(err, false))
+			{
+				return nullptr;
+			}
+			if (on_stdout && !safe_create_pipe(out, false))
+			{
+				return nullptr;
+			}
+
+			posix_spawn_file_actions_t actions;
+			posix_spawn_file_actions_init(&actions);
+			if (in[pipe_read] != -1)
+				posix_spawn_file_actions_adddup2(&actions, in[pipe_read], STDIN_FILENO);
+			if (out[pipe_write] != -1)
+				posix_spawn_file_actions_adddup2(&actions, out[pipe_write], STDOUT_FILENO);
+			if (err[pipe_write] != -1)
+				posix_spawn_file_actions_adddup2(&actions, out[pipe_write], STDERR_FILENO);
+
+			posix_spawnattr_t attr;
+			posix_spawnattr_init(&attr);
+
+			wordexp_t args = { 0, nullptr, 0 };
+			if (wordexp(commandline.c_str(), &args, WRDE_UNDEF) < 0 || args.we_wordc < 1)
+			{
+				wordfree(&args);
+				return nullptr;
+			}
+
+			// Exported by libc.
+			std::vector<char *> ptrs;
+			char **env = environ;
+			if (environment)
+			{
+				char *s;
+				for (s = (char *)environment; *s; s += strlen(s) + 1);
+				{
+					ptrs.push_back(s);
+				}
+				env = ptrs.data();
+			}
+
+			cbl::scoped_guard cleanup([&]()
+			{
+				posix_spawnattr_destroy(&attr);
+				posix_spawn_file_actions_destroy(&actions);
+				wordfree(&args);
+			});
+
+			pid_t child_pid = 0;
+			if (posix_spawn(&child_pid, args.we_wordv[0], &actions, &attr, args.we_wordv, env) < 0)
+			{
+				int error = errno;
+
+				cbl::error("Failed to launch: %s", commandline.c_str());
+				cbl::error("Reason: %s", strerror(error));
+
 				safe_close_pipes(in);
-				safe_close_pipes(err);
 				safe_close_pipes(out);
-				return false;
+				safe_close_pipes(err);
+
+				return nullptr;
 			}
-			return true;
-		};
 
-		if (stdin_buffer && !safe_create_pipe(in, true))
-		{
-			return nullptr;
-		}
-		if (on_stderr && !safe_create_pipe(err, false))
-		{
-			return nullptr;
-		}
-		if (on_stdout && !safe_create_pipe(out, false))
-		{
-			return nullptr;
-		}
+			cbl::log_verbose("Launched process #%d: %s", child_pid, commandline.c_str());
 
-		posix_spawn_file_actions_t actions;
-		posix_spawn_file_actions_init(&actions);
-		if (in[pipe_read] != -1)
-			posix_spawn_file_actions_adddup2(&actions, in[pipe_read], STDIN_FILENO);
-		if (out[pipe_write] != -1)
-			posix_spawn_file_actions_adddup2(&actions, out[pipe_write], STDOUT_FILENO);
-		if (err[pipe_write] != -1)
-			posix_spawn_file_actions_adddup2(&actions, out[pipe_write], STDERR_FILENO);
+			if (stdin_buffer)
+				write(in[pipe_write], stdin_buffer->data(), stdin_buffer->size());
 
-		posix_spawnattr_t attr;
-		posix_spawnattr_init(&attr);
-
-		wordexp_t args = { 0, nullptr, 0 };
-		if (wordexp(commandline, &args, WRDE_UNDEF) < 0 || args.we_wordc < 1)
-		{
-			wordfree(&args);
-			return nullptr;
-		}
-
-		// Exported by libc.
-		std::vector<char *> ptrs;
-		char **env = environ;
-		if (environment)
-		{
-			char *s;
-			for (s = (char *)environment; *s; s += strlen(s) + 1);
+			p = new process();
+			p->on_err = on_stderr;
+			p->on_out = on_stdout;
+			p->handle = (void *)(intptr_t)child_pid;
+			auto copy_pipe = [](void *dst[2], int src[2])
 			{
-				ptrs.push_back(s);
-			}
-			env = ptrs.data();
-		}
-
-		pid_t child_pid = 0;
-		if (posix_spawn(&child_pid, args.we_wordv[0], &actions, &attr, args.we_wordv, env) < 0)
-		{
-			posix_spawnattr_destroy(&attr);
-			posix_spawn_file_actions_destroy(&actions);
-
-			int error = errno;
-			
-			cbl::error("Failed to launch: %s", commandline);
-			cbl::error("Reason: %s", strerror(error));
-
-			safe_close_pipes(in);
-			safe_close_pipes(out);
-			safe_close_pipes(err);
-			return nullptr;
-		}
-
-		posix_spawnattr_destroy(&attr);
-
-		cbl::log_verbose("Launched process #%d: %s", child_pid, commandline);
-
-		if (stdin_buffer)
-			write(in[pipe_write], stdin_buffer->data(), stdin_buffer->size());
-
-		p = new process();
-		p->on_err = on_stderr;
-		p->on_out = on_stdout;
-		p->handle = (void *)(intptr_t)child_pid;
-		memcpy(p->in, in, sizeof(p->in));
-		memcpy(p->out, out, sizeof(p->out));
-		memcpy(p->err, err, sizeof(p->err));
-		return std::shared_ptr<process>(p);
+				dst[0] = (void *)(intptr_t)src[0];
+				dst[1] = (void *)(intptr_t)src[1];
+			};
+			copy_pipe(p->in, in);
+			copy_pipe(p->out, out);
+			copy_pipe(p->err, err);
+			return std::shared_ptr<process>(p);
+		};
+		return kickoff;
 	}
 
 	int process::wait()

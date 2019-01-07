@@ -288,6 +288,60 @@ namespace cbl
 	{
 		static FILE *log_file_stream;
 
+		class background_delete : public enki::ITaskSet
+		{
+			class worker : public enki::ITaskSet
+			{
+				const string_vector &list;
+			public:
+				worker(const string_vector &list_)
+					: enki::ITaskSet(list_.size(), 100)
+					, list(list_)
+				{}
+
+				virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+				{
+					for (auto i = range.start; i < range.end; ++i)
+					{
+						if (!fs::delete_file(list[i].c_str()))
+							warning("Failed to delete old log file %s", list[i].c_str());
+					}
+				}
+			};
+
+			std::string log_dir;
+
+		public:
+			background_delete(std::string log_directory)
+				: log_dir(log_directory)
+			{}
+
+			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+			{
+				auto old_logs = cbl::fs::enumerate_files(cbl::path::join(log_dir, "*.log").c_str());
+				constexpr size_t max_old_log_files = 10;	// TODO: Put this in config.
+				if (old_logs.size() > max_old_log_files)
+				{
+					std::sort(old_logs.begin(), old_logs.end());
+					old_logs.erase(old_logs.end() - max_old_log_files, old_logs.end());
+					worker task(old_logs);
+					cbl::scheduler.AddTaskSetToPipe(&task);
+					cbl::scheduler.WaitforTask(&task);
+				}
+
+				// Once we're done processing, delete ourselves.
+				// FIXME: Can't delete ourselves because the scheduler makes an atomic write afterwards.
+#if 0
+				delete this;
+#else
+					// The next best thing is leaking just the string, but not its data.
+				log_dir.clear();
+				log_dir.shrink_to_fit();
+#endif
+			}
+		};
+
+
 		void rotate_logs()
 		{
 			// Rotate the latest log file to a sortable, timestamped format.
@@ -312,60 +366,8 @@ namespace cbl
 				}
 			}
 
-			// Delete old log files.
-			// TODO: Spin off a background task.
-			auto old_logs = cbl::fs::enumerate_files(cbl::path::join(log_dir, "*.log").c_str());
-			constexpr size_t max_old_log_files = 10;	// TODO: Put this in config.
-			if (old_logs.size() > max_old_log_files)
-			{
-				std::sort(old_logs.begin(), old_logs.end());
-				old_logs.erase(old_logs.end() - max_old_log_files, old_logs.end());
-				class background_delete : public enki::ITaskSet
-				{
-					string_vector list;
-
-				public:
-
-					background_delete(const string_vector &list_)
-						: enki::ITaskSet(list_.size(), 100)
-						, list(list_)
-					{}
-
-					virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-					{
-						for (auto i = range.start; i < range.end; ++i)
-						{
-							if (!fs::delete_file(list[i].c_str()))
-							{
-								warning("Failed to delete old log file %s", list[i].c_str());
-							}
-						}
-
-						// If we're done processing, delete ourselves.
-						if (
-							// FIXME: Add the API upstream for testing this safely.
-#if 0
-							GetIsLastSubTask()
-#else
-							1 == *((volatile int32_t *)static_cast<ICompletable *>(this))
-#endif
-							)
-						{
-							// FIXME: Can't delete ourselves because the scheduler makes an atomic write afterwards.
-#if 0
-							delete this;
-#else
-							// The next best thing is only leaking the vector, not the strings.
-							list.clear();
-							list.shrink_to_fit();
-#endif
-						}
-					}
-				};
-				auto *task = new background_delete(old_logs);
-				// Fire and forget.
-				scheduler.AddTaskSetToPipe(task);
-			}
+			// Delete old log files. Fire and forget.
+			scheduler.AddTaskSetToPipe(new background_delete(log_dir));
 
 			// Open the new stream.
 			log_file_stream = fopen(log.c_str(), "w");

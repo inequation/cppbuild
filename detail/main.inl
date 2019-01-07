@@ -167,7 +167,7 @@ void cull_build(std::shared_ptr<graph::action>& root)
 {
 	// TODO: Also compare toolchain invocations, as they may easily change the output.
 	cbl::time::scoped_timer _("Build graph culling");
-	/*cbl::log(cbl::severity::verbose, "Build graph before culling:");
+	/*cbl::info("Build graph before culling:");
 	dump_graph(std::static_pointer_cast<graph::cpp_action>(root));*/
 
 	graph::cull_build_graph(root);
@@ -209,6 +209,7 @@ namespace detail
 		cfg.second.additional_include_directories.push_back("cppbuild");
 		cfg.second.definitions.push_back(std::make_pair("CPPBUILD_GENERATION", std::to_string(CPPBUILD_GENERATION == 0 ? 2 : (CPPBUILD_GENERATION + 1))));
 		cfg.second.additional_toolchain_options["msvc link"] = cbl::vwrap("/SUBSYSTEM:CONSOLE");
+		cfg.second.additional_toolchain_options["gcc link"] = cbl::vwrap("-pthread");
 
 		return std::make_pair(
 			std::make_pair(cppbuild, target),
@@ -336,7 +337,7 @@ int main(int argc, char *argv[])
 	cbl::scheduler.Initialize();	// FIXME: Configurable thread count.
 	cbl::detail::rotate_logs();
 	
-	struct scoped_cleanup { ~scoped_cleanup() { cbl::scheduler.WaitforAllAndShutdown(); } } cleanup;
+	cbl::scoped_guard cleanup([]() { cbl::scheduler.WaitforAllAndShutdown(); });
 
 	toolchain_map toolchains;
 	discover_toolchains(toolchains);

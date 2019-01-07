@@ -69,7 +69,8 @@ struct gcc : public toolchain
 				cmdline += " -o " + target.second.output;
 				if (cfg.second.use_debug_crt)
 				{
-					cmdline += " -lmcheck";
+					// FIXME: mcheck is not thread-safe without additional synchronisation.
+					//cmdline += " -lmcheck";
 				}
 				if (addtn_opts)
 				{

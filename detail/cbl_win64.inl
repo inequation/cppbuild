@@ -326,6 +326,7 @@ namespace cbl
 		const std::vector<uint8_t> *stdin_buffer, void *environment)
 	{
 		std::string commandline = not_owned_commandline;
+		// FIXME: Lifetime of callbacks, buffer & environment?
 		auto kickoff = [=]() -> std::shared_ptr<process>
 		{
 			process *p = nullptr;

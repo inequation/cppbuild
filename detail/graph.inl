@@ -44,7 +44,7 @@ namespace graph
 
 		void cull_action(std::shared_ptr<action>& action, uint64_t root_timestamp)
 		{
-			std::atomic_uint64_t self_timestamp = action->get_oldest_output_timestamp();
+			std::atomic_uint64_t self_timestamp(action->get_oldest_output_timestamp());
 			auto update_self_timestamp = [&self_timestamp](uint64_t input_timestamp)
 			{
 				if (input_timestamp == 0 || self_timestamp == 0)
@@ -144,7 +144,7 @@ namespace graph
 
 		struct build_context
 		{
-			const target& target;
+			const ::target& target;
 			const configuration& cfg;
 			std::shared_ptr<toolchain> tc;
 			const cbl::pipe_output_callback& on_stderr;
@@ -162,8 +162,10 @@ namespace graph
 			cbl::deferred_process process;
 			int exit_code = -1;
 
-			build_task(build_context &context, std::shared_ptr<action> root_action, cbl::deferred_process work = nullptr)
-				: ctx(context)
+			build_task(build_context &context, std::shared_ptr<action> root_action, cbl::deferred_process work = nullptr,
+				uint32_t set_size = 1, uint32_t min_size_for_splitting_to_threads = 1)
+				: enki::ITaskSet(set_size, min_size_for_splitting_to_threads)
+				, ctx(context)
 				, root(root_action)
 				, process(work)
 			{}
@@ -172,6 +174,8 @@ namespace graph
 			{
 				if (process)
 				{
+					for (auto &o : root->outputs)
+						cbl::info("Building %s", o.c_str());
 					auto spawned = process();
 					if (spawned)
 					{
@@ -213,8 +217,9 @@ namespace graph
 			}
 
 		public:
-			build_task_with_deps(build_context &context, std::shared_ptr<action> root_action, cbl::deferred_process work = nullptr)
-				: build_task(context, root_action, work)
+			build_task_with_deps(build_context &context, std::shared_ptr<action> root_action, cbl::deferred_process work = nullptr,
+				uint32_t min_size_for_splitting_to_threads = 1)
+				: build_task(context, root_action, work, root_action->inputs.size(), min_size_for_splitting_to_threads)
 			{}
 
 			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override

@@ -242,7 +242,7 @@ namespace cbl
 				, body(callable)
 			{}
 
-			virtual void ExecuteRange(TaskSetPartition range, uint32_t threadnum) override
+			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
 			{
 				for (auto i = range.start; i < range.end; ++i)
 					body(i);
@@ -252,6 +252,17 @@ namespace cbl
 		scheduler.AddTaskSetToPipe(&loop);
 		scheduler.WaitforTask(&loop);
 	}
+
+	// Helper construct that (ab)uses RAII to run some code when going out of scope.
+	struct scoped_guard
+	{
+		using callable = std::function<void()>;
+		explicit scoped_guard(callable c) : stored(c) {}
+		~scoped_guard() { stored(); }
+	private:
+		scoped_guard operator=(const scoped_guard &) = delete;
+		callable stored;
+	};
 }
 
 #if _WIN64
