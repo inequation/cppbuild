@@ -174,8 +174,7 @@ namespace graph
 			{
 				if (process)
 				{
-					for (auto &o : root->outputs)
-						cbl::info("Building %s", o.c_str());
+					cbl::info("%s", ("Building " + cbl::join(root->outputs, " ")).c_str());
 					auto spawned = process();
 					if (spawned)
 					{
