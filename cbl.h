@@ -1,6 +1,7 @@
 #pragma once
 
 #include "detail/enkiTS/src/TaskScheduler.h"
+#include "detail/minitrace/minitrace.h"
 
 typedef std::vector<std::string> string_vector;
 

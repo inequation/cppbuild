@@ -164,8 +164,13 @@ std::pair<std::string, std::string> describe(target_map& targets, configuration_
 
 //=============================================================================
 
+// Internal implementations
 #include "detail/cbl.inl"
 #include "detail/graph.inl"
 #include "detail/toolchain.inl"
 #include "detail/main.inl"
 #include "detail/enkiTS/src/TaskScheduler.cpp"
+extern "C"
+{
+#include "detail/minitrace/minitrace.c"
+}

@@ -301,6 +301,7 @@ namespace cbl
 
 				virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
 				{
+					MTR_SCOPE("rotate_logs", "background_delete");
 					for (auto i = range.start; i < range.end; ++i)
 					{
 						if (!fs::delete_file(list[i].c_str()))
@@ -318,13 +319,23 @@ namespace cbl
 
 			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
 			{
-				auto old_logs = cbl::fs::enumerate_files(cbl::path::join(log_dir, "*.log").c_str());
-				constexpr size_t max_old_log_files = 10;	// TODO: Put this in config.
-				if (old_logs.size() > max_old_log_files)
+				string_vector to_delete;
+
+				static const char *globs[] = { "*.log", "*.json" };
+				for (const char *glob : globs)
 				{
-					std::sort(old_logs.begin(), old_logs.end());
-					old_logs.erase(old_logs.end() - max_old_log_files, old_logs.end());
-					worker task(old_logs);
+					auto old_logs = cbl::fs::enumerate_files(cbl::path::join(log_dir, glob).c_str());
+					constexpr size_t max_old_log_files = 10;	// TODO: Put this in config.
+					if (old_logs.size() > max_old_log_files)
+					{
+						std::sort(old_logs.begin(), old_logs.end());
+						to_delete.insert(to_delete.end(), old_logs.begin(), old_logs.end() - max_old_log_files);
+					}
+				}
+
+				if (!to_delete.empty())
+				{
+					worker task(to_delete);
 					cbl::scheduler.AddTaskSetToPipe(&task);
 					cbl::scheduler.WaitforTask(&task);
 				}
@@ -334,42 +345,72 @@ namespace cbl
 #if 0
 				delete this;
 #else
-					// The next best thing is leaking just the string, but not its data.
+				// The next best thing is leaking just the string, but not its data.
 				log_dir.clear();
 				log_dir.shrink_to_fit();
 #endif
 			}
 		};
 
+		void rotate(const char *log_dir, const char *ext)
+		{
+			std::string file = path::join(log_dir, std::string("cppbuild.") + ext);
+			uint64_t stamp = fs::get_modification_timestamp(file.c_str());
+			if (stamp != 0)
+			{
+				int y, M, d, h, m, s, us;
+				time::of_day(stamp, &y, &M, &d, &h, &m, &s, &us);
+				char new_name[36];
+				std::string old_file = path::join(log_dir, "cppbuild-");
+				uint64_t number = uint64_t(y) * 10000 + uint64_t(M) * 100 + uint64_t(d);
+				old_file += std::to_string(number) + "-";
+				number = uint64_t(h) * 10000 + uint64_t(m) * 100 + uint64_t(s);
+				old_file += std::to_string(number) + "-";
+				old_file += std::to_string(us) + "." + ext;
+				if (!fs::move_file(file.c_str(), old_file.c_str(), fs::maintain_timestamps))
+				{
+					warning("Failed to rotate %s file %s to %s", ext, file.c_str(), old_file.c_str());
+				}
+			}
+		}
+
+		void rotate_traces()
+		{
+			// Rotate the latest log file to a sortable, timestamped format.
+			std::string log_dir = path::join(path::get_cppbuild_cache_path(), "log");
+			fs::mkdir(log_dir.c_str(), true);
+
+			rotate(log_dir.c_str(), "json");
+			std::string log = path::join(log_dir, "cppbuild.json");
+			mtr_init(log.c_str());
+			atexit(mtr_shutdown);
+			MTR_META_PROCESS_NAME("cppbuild");
+			MTR_META_THREAD_NAME("main thread");
+
+			auto callbacks = cbl::scheduler.GetProfilerCallbacks();
+			callbacks->threadStart = [](uint32_t thread_index)
+			{
+				MTR_META_THREAD_NAME(("Task " + std::to_string(thread_index)).c_str());
+				MTR_META_THREAD_SORT_INDEX((uintptr_t)(thread_index + 1));
+			};
+			callbacks->threadStop = nullptr;
+			callbacks->waitStart = [](uint32_t thread_index) { MTR_BEGIN("task", "wait"); };
+			callbacks->waitStop = [](uint32_t thread_index) { MTR_END("task", "wait"); };
+		}
 
 		void rotate_logs()
 		{
 			// Rotate the latest log file to a sortable, timestamped format.
 			std::string log_dir = path::join(path::get_cppbuild_cache_path(), "log");
 			fs::mkdir(log_dir.c_str(), true);
-			std::string log = path::join(log_dir, "cppbuild.log");
-			uint64_t stamp = fs::get_modification_timestamp(log.c_str());
-			if (stamp != 0)
-			{
-				int y, M, d, h, m, s, us;
-				time::of_day(stamp, &y, &M, &d, &h, &m, &s, &us);
-				char new_name[36];
-				std::string old_log = path::join(log_dir, "cppbuild-");
-				uint64_t number = uint64_t(y) * 10000 + uint64_t(M) * 100 + uint64_t(d);
-				old_log += std::to_string(number) + "-";
-				number = uint64_t(h) * 10000 + uint64_t(m) * 100 + uint64_t(s);
-				old_log += std::to_string(number) + "-";
-				old_log += std::to_string(us) + ".log";
-				if (!fs::move_file(log.c_str(), old_log.c_str(), fs::maintain_timestamps))
-				{
-					warning("Failed to rotate log file %s to %s", log.c_str(), old_log.c_str());
-				}
-			}
+
+			rotate(log_dir.c_str(), "log");
 
 			// Delete old log files. Fire and forget.
 			scheduler.AddTaskSetToPipe(new background_delete(log_dir));
 
 			// Open the new stream.
+			std::string log = path::join(log_dir, "cppbuild.log");
 			log_file_stream = fopen(log.c_str(), "w");
 			// Make sure that handle inheritance doesn't block log rotation in the deploying child process.
 			cbl::fs::disinherit_stream(log_file_stream);

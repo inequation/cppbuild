@@ -44,6 +44,16 @@ namespace graph
 
 		void cull_action(std::shared_ptr<action>& action, uint64_t root_timestamp)
 		{
+			static const char *types[] =
+			{
+				"cull_action_link",
+				"cull_action_compile",
+				"cull_action_source",
+				"cull_action_include",
+				"cull_action_generate"
+			};
+			static_assert(sizeof(types) / sizeof(types[0]) == graph::action::cpp_actions_end, "Missing string for action type");
+			MTR_SCOPE("graph", action->type <= cpp_action::generate ? types[action->type] : "cull_action");
 			std::atomic_uint64_t self_timestamp(action->get_oldest_output_timestamp());
 			auto update_self_timestamp = [&self_timestamp](uint64_t input_timestamp)
 			{
@@ -55,6 +65,7 @@ namespace graph
 
 			auto cull_input = [&](std::shared_ptr<graph::action> &input, uint64_t stamp_if_missing = 0)
 			{
+				MTR_SCOPE("graph", "cull_input");
 				uint64_t input_timestamp = input ? input->get_oldest_output_timestamp() : stamp_if_missing;
 				// Only cull inputs if we exist.
 				if (input_timestamp > 0 && (!input || input_timestamp < root_timestamp) && self_timestamp > 0)
@@ -78,6 +89,7 @@ namespace graph
 
 			auto erase_null_inputs = [](std::vector<std::shared_ptr<graph::action>> &inputs)
 			{
+				MTR_SCOPE("graph", "prune_inputs");
 				for (int i = inputs.size() - 1; i >= 0; --i)
 				{
 					if (nullptr == inputs[i])
@@ -115,6 +127,14 @@ namespace graph
 				break;
 			case cpp_action::compile:
 			case cpp_action::link:
+			{
+				decltype(action->inputs) backup_inputs;
+				const bool is_linking = action->type == cpp_action::link;
+				if (is_linking)
+				{
+					// For linking, if any input remains at all, we need to link all of them.
+					backup_inputs.insert(backup_inputs.begin(), action->inputs.begin(), action->inputs.end());
+				}
 				cbl::parallel_for([&](uint32_t i)
 					{
 						uint64_t start = cbl::time::now();
@@ -124,6 +144,32 @@ namespace graph
 					},
 					action->inputs.size(), 1);
 				erase_null_inputs(action->inputs);
+				if (is_linking && !action->inputs.empty() && action->inputs.size() < backup_inputs.size())
+				{
+					for (auto &bi : backup_inputs)
+					{
+						auto predicate = [&bi](const std::shared_ptr<graph::action> &in)
+						{
+							if (in->outputs.size() == bi->outputs.size())
+							{
+								for (size_t i = 0; i < in->outputs.size(); ++i)
+								{
+									// We can test for identity because the backup is a clone.
+									if (in->outputs[i] != bi->outputs[i])
+										return false;
+								}
+								return true;
+							}
+							return false;
+						};
+						if (action->inputs.end() == std::find_if(action->inputs.begin(), action->inputs.end(), predicate))
+						{
+							// We don't need to build the object, but we need to consume it.
+							bi->inputs.clear();
+							action->inputs.push_back(bi);
+						}
+					}
+				}
 				if (action->inputs.empty() && root_timestamp != 0)
 				{
 					cbl::log_debug("Culling ACTION type %d %s (%d inputs remaining)", action->type, action->outputs[0].c_str(), action->inputs.size());
@@ -134,6 +180,7 @@ namespace graph
 					action->output_timestamps[0] = self_timestamp;
 				}
 				break;
+			}
 			default:
 				assert(!"Unimplmented");
 				abort();
@@ -169,12 +216,16 @@ namespace graph
 				, root(root_action)
 				, process(work)
 			{}
-
+			
 			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
 			{
 				if (process)
 				{
-					cbl::info("%s", ("Building " + cbl::join(root->outputs, " ")).c_str());
+					std::string outputs = cbl::join(root->outputs, " ");
+					// Avoid JSON escape sequence issues.
+					for (auto& c : outputs) { if (c == '\\') c = '/'; }
+					cbl::info("%s", ("Building " + outputs).c_str());
+					MTR_SCOPE_S("build", "build_task", "outputs", outputs.c_str());
 					auto spawned = process();
 					if (spawned)
 					{
@@ -193,12 +244,14 @@ namespace graph
 		protected:
 			void dispatch_subtasks_and_wait(enki::TaskSetPartition range, uint32_t threadnum)
 			{
+				MTR_SCOPE("build", "subtask_dispatch");
 				// FIXME: Creating a ton of task sets is excessive, we should create one task set and feed it arrays instead.
 				std::vector<std::shared_ptr<enki::ITaskSet>> subtasks;
 				subtasks.reserve(range.end - range.start);
 				for (uint32_t i = range.start; i < range.end; ++i)
 				{
-					subtasks.push_back(enqueue_build_tasks(ctx, root->inputs[i]));
+					if (auto subtask = enqueue_build_tasks(ctx, root->inputs[i]))
+						subtasks.push_back(subtask);
 				}
 				// Issue the subtasks.
 				for (auto& t : subtasks)
@@ -208,7 +261,7 @@ namespace graph
 				for (auto& t : subtasks)
 				{
 					cbl::scheduler.WaitforTask(t.get());
-					// Propagate the firts non-success exit code.
+					// Propagate the first non-success exit code.
 					if (dep_exit_code == 0)
 						dep_exit_code = std::static_pointer_cast<build_task_with_deps>(t)->exit_code;
 				}
@@ -244,6 +297,8 @@ namespace graph
 
 			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
 			{
+				MTR_SCOPE("build", "compile");
+
 				assert(root->outputs.size() == 1);
 				assert(root->inputs.size() == 1);
 				auto i = root->inputs[0];
@@ -274,6 +329,12 @@ namespace graph
 					inputs,
 					ctx.cfg, ctx.on_stderr, ctx.on_stdout);
 			}
+
+			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+			{
+				MTR_SCOPE("build", "link");
+				build_task_with_deps::ExecuteRange(range, threadnum);
+			}
 		};
 
 		class generate_task : public build_task_with_deps
@@ -291,6 +352,7 @@ namespace graph
 
 		task_set_ptr enqueue_build_tasks(build_context ctx, std::shared_ptr<action> root)
 		{
+			MTR_SCOPE("build", "enqueue");
 			if (!root)
 			{
 				// Empty graph, nothing to build.
@@ -319,6 +381,7 @@ namespace graph
 
 	std::shared_ptr<action> generate_cpp_build_graph(const target& target, const configuration& cfg, std::shared_ptr<toolchain> tc)
 	{
+		MTR_SCOPE("graph", "graph_generation");
 		std::shared_ptr<cpp_action> root = std::make_shared<cpp_action>();
 		root->type = (action::action_type)cpp_action::link;
 		auto sources = target.second.sources();
@@ -333,6 +396,7 @@ namespace graph
 	
 	void cull_build_graph(std::shared_ptr<action>& root)
 	{
+		MTR_SCOPE("graph", "graph_culling");
 		uint64_t root_timestamp = root->get_oldest_output_timestamp();
 		detail::cull_action(root, root_timestamp);
 	}
@@ -344,6 +408,7 @@ namespace graph
 		const cbl::pipe_output_callback& on_stderr,
 		const cbl::pipe_output_callback& on_stdout)
 	{
+		MTR_SCOPE("graph", "graph_execution");
 		detail::build_context ctx{ target, cfg, tc, on_stderr, on_stdout };
 		int exit_code = 0;
 		if (auto root_task = detail::enqueue_build_tasks(ctx, root))
@@ -357,6 +422,7 @@ namespace graph
 
 	void clean_build_graph_outputs(std::shared_ptr<action> root)
 	{
+		MTR_SCOPE("graph", "graph_cleaning");
 		if (!root)
 		{
 			// Empty graph, nothing to clean.
@@ -377,6 +443,7 @@ namespace graph
 
 	void action::update_output_timestamps()
 	{
+		MTR_SCOPE("action", __FUNCTION__);
 		output_timestamps.clear();
 		output_timestamps.reserve(outputs.size());
 		for (auto& o : outputs)
@@ -444,6 +511,7 @@ namespace graph
 		template <serializer serializer, void(* on_success)(const char *key, const char *path, uint64_t stamp) = nullptr>
 		void serialize_cache_items(timestamp_cache& cache, FILE *stream)
 		{
+			MTR_SCOPE("cache", "cache_serializer");
 			magic m = cache_magic;
 			if (1 == serializer(&m, sizeof(m), 1, stream) && m.i == cache_magic.i)
 			{
@@ -541,9 +609,12 @@ namespace graph
 
 		timestamp_cache& find_or_create_cache(const target &target, const configuration& cfg)
 		{
+			MTR_SCOPE("cache", "cache_find_or_create");
 			using namespace cbl;
 
+			MTR_BEGIN("cache", "find_or_create_mutex");
 			std::lock_guard<std::mutex> _(cache_mutex);
+			MTR_END("cache", "find_or_create_mutex");
 
 			auto key = std::make_pair(target, cfg);
 			auto it = cache_map.find(key);
@@ -577,6 +648,8 @@ namespace graph
 
 	void save_timestamp_caches()
 	{
+		MTR_SCOPE("cache", "cache_save");
+
 		using namespace cbl;
 
 		detail::for_each_cache([](const detail::cache_map_key &key, timestamp_cache &cache)
@@ -597,6 +670,8 @@ namespace graph
 
 	bool query_dependency_cache(const target &target, const configuration& cfg, const std::string& source, std::function<void(const std::string &)> push_dep)
 	{
+		MTR_SCOPE("cache", "cache_query");
+
 		auto& cache = detail::find_or_create_cache(target, cfg);
 
 		auto it = cache.find(source);
@@ -636,6 +711,8 @@ namespace graph
 
 	void insert_dependency_cache(const target &target, const configuration& cfg, const std::string& source, const graph::dependency_timestamp_vector &deps)
 	{
+		MTR_SCOPE("cache", "cache_insert");
+
 		auto& cache = detail::find_or_create_cache(target, cfg);
 
 		cache[source] = deps;

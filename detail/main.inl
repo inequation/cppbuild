@@ -144,6 +144,7 @@ void dump_graph(std::shared_ptr<graph::action> root)
 
 std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_build(const target& target, const configuration& cfg, toolchain_map& toolchains, std::shared_ptr<toolchain> *out_tc = nullptr)
 {
+	MTR_SCOPE("build", "setup");
 	const char *used_tc = target.second.used_toolchain;
 	if (!used_tc)
 	{
@@ -156,7 +157,10 @@ std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_buil
 	assert(toolchains.find(used_tc) != toolchains.end() && "Unknown toolchain");
 	auto& tc = toolchains[used_tc];
 
-	tc->initialize(cfg);
+	{
+		MTR_SCOPE("toolchain", "initialize_toolchain");
+		tc->initialize(cfg);
+	}
 	return std::make_pair(
 		graph::generate_cpp_build_graph(target, cfg, tc),
 		tc
@@ -208,6 +212,7 @@ namespace detail
 		cfg.second = base_configurations::debug(cbl::get_host_platform());
 		cfg.second.additional_include_directories.push_back("cppbuild");
 		cfg.second.definitions.push_back(std::make_pair("CPPBUILD_GENERATION", std::to_string(CPPBUILD_GENERATION == 0 ? 2 : (CPPBUILD_GENERATION + 1))));
+		cfg.second.definitions.push_back(std::make_pair("MTR_ENABLED", "1"));
 		cfg.second.additional_toolchain_options["msvc link"] = cbl::vwrap("/SUBSYSTEM:CONSOLE");
 		cfg.second.additional_toolchain_options["gcc link"] = cbl::vwrap("-pthread");
 
@@ -219,6 +224,7 @@ namespace detail
 
 	int bootstrap_build(toolchain_map& toolchains, int argc, const char *argv[])
 	{
+		MTR_SCOPE("bootstrap", "bootstrap_build");
 		using namespace cbl;
 
 		auto bootstrap = describe_bootstrap_target(toolchains);
@@ -247,6 +253,7 @@ namespace detail
 			int exit_code = execute_build(bootstrap.first, build.first, bootstrap.second, build.second);
 			if (exit_code == 0)
 			{
+				MTR_SCOPE("bootstrap", "bootstrap_deploy_dispatch");
 				std::string cmdline = bootstrap.first.second.output;
 				cmdline += " _bootstrap_deploy "
 					+ std::to_string(cbl::process::get_current_pid()) + " "
@@ -271,6 +278,7 @@ namespace detail
 		}
 		else
 		{
+			MTR_SCOPE("bootstrap", "gc");
 			info("cppbuild executable up to date");
 			auto old_copies = cbl::fs::enumerate_files(cbl::path::join(staging_dir, "build-*").c_str());
 #ifdef _WIN64
@@ -287,6 +295,7 @@ namespace detail
 
 	int boostrap_deploy(int argc, char *argv[], const toolchain_map& toolchains)
 	{
+		MTR_SCOPE("bootstrap", "bootstrap_deploy_exec");
 		// Finish the bootstrap deployment: 
 		uint32_t parent_pid = atoi(argv[2]);
 		cbl::process::wait_for_pid(parent_pid);
@@ -334,9 +343,10 @@ void print_version()
 
 int main(int argc, char *argv[])
 {
+	cbl::detail::rotate_traces();
 	cbl::scheduler.Initialize();	// FIXME: Configurable thread count.
 	cbl::detail::rotate_logs();
-	
+
 	cbl::scoped_guard cleanup([]() { cbl::scheduler.WaitforAllAndShutdown(); });
 
 	toolchain_map toolchains;
@@ -388,6 +398,7 @@ int main(int argc, char *argv[])
 		return (int)error_code::unknown_configuration;
 	}
 
+	MTR_SCOPE_S("build", "build_target", "target", target->first.c_str());
 	cbl::info("Building target %s in configuration %s", target->first.c_str(), cfg->first.c_str());
 	auto build = setup_build(*target, *cfg, toolchains);
 	cull_build(build.first);

@@ -10,6 +10,7 @@
 
 void discover_toolchains(toolchain_map& toolchains)
 {
+	MTR_SCOPE(__FILE__, __FUNCTION__);
 	// FIXME: Actual discovery, detection etc.
 #if defined(_WIN64)
 	toolchains[msvc::key] = std::make_shared<msvc>();
