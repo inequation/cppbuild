@@ -443,7 +443,6 @@ namespace graph
 
 	void action::update_output_timestamps()
 	{
-		MTR_SCOPE("action", __FUNCTION__);
 		output_timestamps.clear();
 		output_timestamps.reserve(outputs.size());
 		for (auto& o : outputs)
@@ -677,18 +676,21 @@ namespace graph
 		auto it = cache.find(source);
 		if (it != cache.end())
 		{
-			cbl::time::scoped_timer("Timestamp cache query", cbl::severity::verbose);
 			bool up_to_date = true;
-			for (const auto &entry : it->second)
+			cbl::parallel_for(
+				[&](uint32_t i)
 			{
+				const auto &entry = *(it->second.begin() + i);
 				uint64_t stamp = cbl::fs::get_modification_timestamp(entry.first.c_str());
 				if (stamp == 0 || stamp != entry.second)
 				{
 					cbl::log_verbose("Outdated time stamp for dependency %s (%" PRId64 " vs %" PRId64 ")", entry.first.c_str(), stamp, entry.second);
 					up_to_date = false;
-					break;
 				}
-			}
+			},
+				it->second.size(),
+				100
+			);
 			if (up_to_date)
 			{
 				for (const auto &entry : it->second)

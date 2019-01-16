@@ -426,9 +426,7 @@ namespace cbl
 
 	int process::wait()
 	{
-		std::string desc = "Waiting for process handle #";
-		desc += std::to_string((uintptr_t)handle);
-		cbl::time::scoped_timer _(desc.c_str(), cbl::severity::verbose);
+		MTR_SCOPE_I("process", "wait_for_process", "handle", (uintptr_t)handle);
 
 		int exit_code = -1;
 		auto read_pipe_to_callback = [](HANDLE pipe[2], std::vector<uint8_t> &buffer, pipe_output_callback& cb)

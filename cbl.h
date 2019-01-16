@@ -245,12 +245,14 @@ namespace cbl
 
 			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
 			{
+				MTR_SCOPE_C("cbl", "parallel_for", "func", typeid(body).name());
 				for (auto i = range.start; i < range.end; ++i)
 					body(i);
 			}
 		};
 		loop_task loop(callable, set_size, min_size_for_splitting_to_threads);
 		scheduler.AddTaskSetToPipe(&loop);
+		//MTR_SCOPE("cbl", "parallel_for_wait");
 		scheduler.WaitforTask(&loop);
 	}
 

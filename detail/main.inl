@@ -144,15 +144,13 @@ void dump_graph(std::shared_ptr<graph::action> root)
 
 std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_build(const target& target, const configuration& cfg, toolchain_map& toolchains, std::shared_ptr<toolchain> *out_tc = nullptr)
 {
-	MTR_SCOPE("build", "setup");
 	const char *used_tc = target.second.used_toolchain;
 	if (!used_tc)
 	{
 		used_tc = cbl::get_default_toolchain_for_host();
 	}
-	std::string s = "Build setup using ";
-	s += used_tc;
-	cbl::time::scoped_timer _(s.c_str());
+
+	MTR_SCOPE_S("build", "setup", "used_toolchain", used_tc);
 
 	assert(toolchains.find(used_tc) != toolchains.end() && "Unknown toolchain");
 	auto& tc = toolchains[used_tc];
@@ -170,7 +168,6 @@ std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_buil
 void cull_build(std::shared_ptr<graph::action>& root)
 {
 	// TODO: Also compare toolchain invocations, as they may easily change the output.
-	cbl::time::scoped_timer _("Build graph culling");
 	/*cbl::info("Build graph before culling:");
 	dump_graph(std::static_pointer_cast<graph::cpp_action>(root));*/
 
@@ -183,7 +180,6 @@ void cull_build(std::shared_ptr<graph::action>& root)
 
 int execute_build(const target& target, std::shared_ptr<graph::action> root, const configuration& cfg, std::shared_ptr<toolchain> tc)
 {
-	cbl::time::scoped_timer _("Build graph execution");
 	int exit_code = graph::execute_build_graph(target, root, cfg, tc, nullptr, nullptr);
 	cbl::info("Build finished with code %d", exit_code);
 	return exit_code;
@@ -399,7 +395,8 @@ int main(int argc, char *argv[])
 	}
 
 	MTR_SCOPE_S("build", "build_target", "target", target->first.c_str());
-	cbl::info("Building target %s in configuration %s", target->first.c_str(), cfg->first.c_str());
+	std::string desc = "Building target " + target->first + " in configuration " + cfg->first;
+	cbl::time::scoped_timer _(desc.c_str());
 	auto build = setup_build(*target, *cfg, toolchains);
 	cull_build(build.first);
 	return execute_build(*target, build.first, *cfg, build.second);

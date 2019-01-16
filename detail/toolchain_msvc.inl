@@ -149,6 +149,7 @@ struct msvc : public toolchain
 		};
 		cmdline += " " + source;
 		
+		MTR_SCOPE_S("msvc", "dependency_scan", "source", source.c_str());
 		int exit_code = cbl::process::start_sync(cmdline.c_str(), append_to_buffer, [](const void *, size_t) {});
 		if (exit_code == 0)
 		{
