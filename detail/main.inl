@@ -342,6 +342,7 @@ int main(int argc, char *argv[])
 	cbl::detail::rotate_traces();
 	cbl::scheduler.Initialize();	// FIXME: Configurable thread count.
 	cbl::detail::rotate_logs();
+	cbl::detail::delete_old_logs_and_traces();
 
 	cbl::scoped_guard cleanup([]() { cbl::scheduler.WaitforAllAndShutdown(); });
 

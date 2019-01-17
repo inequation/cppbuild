@@ -328,7 +328,12 @@ namespace cbl
 					constexpr size_t max_old_log_files = 10;	// TODO: Put this in config.
 					if (old_logs.size() > max_old_log_files)
 					{
-						std::sort(old_logs.begin(), old_logs.end());
+						std::sort(old_logs.begin(), old_logs.end(),
+							[](const std::string& a, const std::string& b)
+						{
+							return fs::get_modification_timestamp(a.c_str())
+								< fs::get_modification_timestamp(b.c_str());
+						});
 						to_delete.insert(to_delete.end(), old_logs.begin(), old_logs.end() - max_old_log_files);
 					}
 				}
@@ -354,6 +359,7 @@ namespace cbl
 
 		void rotate(const char *log_dir, const char *ext)
 		{
+			fs::mkdir(log_dir, true);
 			std::string file = path::join(log_dir, std::string("cppbuild.") + ext);
 			uint64_t stamp = fs::get_modification_timestamp(file.c_str());
 			if (stamp != 0)
@@ -378,15 +384,15 @@ namespace cbl
 		{
 			// Rotate the latest log file to a sortable, timestamped format.
 			std::string log_dir = path::join(path::get_cppbuild_cache_path(), "log");
-			fs::mkdir(log_dir.c_str(), true);
-
-			rotate(log_dir.c_str(), "json");
 			std::string log = path::join(log_dir, "cppbuild.json");
+			rotate(log_dir.c_str(), "json");
+			
 			mtr_init(log.c_str());
 			atexit(mtr_shutdown);
 			MTR_META_PROCESS_NAME("cppbuild");
 			MTR_META_THREAD_NAME("main thread");
 
+			// Also register with the scheduler callbacks.
 			auto callbacks = cbl::scheduler.GetProfilerCallbacks();
 			callbacks->threadStart = [](uint32_t thread_index)
 			{
@@ -402,19 +408,20 @@ namespace cbl
 		{
 			// Rotate the latest log file to a sortable, timestamped format.
 			std::string log_dir = path::join(path::get_cppbuild_cache_path(), "log");
-			fs::mkdir(log_dir.c_str(), true);
-
+			std::string log = path::join(log_dir, "cppbuild.log");
 			rotate(log_dir.c_str(), "log");
 
-			// Delete old log files. Fire and forget.
-			scheduler.AddTaskSetToPipe(new background_delete(log_dir));
-
 			// Open the new stream.
-			std::string log = path::join(log_dir, "cppbuild.log");
 			log_file_stream = fopen(log.c_str(), "w");
 			// Make sure that handle inheritance doesn't block log rotation in the deploying child process.
 			cbl::fs::disinherit_stream(log_file_stream);
 			atexit([]() { fclose(log_file_stream); });
+		}
+
+		void delete_old_logs_and_traces()
+		{
+			// Delete old log files. Fire and forget.
+			scheduler.AddTaskSetToPipe(new background_delete(path::join(path::get_cppbuild_cache_path(), "log")));
 		}
 
 		static constexpr severity compiled_log_level = severity::	// FIXME: Put in config.
