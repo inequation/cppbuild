@@ -10,12 +10,22 @@
 
 void discover_toolchains(toolchain_map& toolchains)
 {
-	MTR_SCOPE(__FILE__, __FUNCTION__);
-	// FIXME: Actual discovery, detection etc.
+	MTR_SCOPE_FUNC();
+	std::shared_ptr<toolchain> tc;
+	// FIXME: Use parallel_for.
 #if defined(_WIN64)
-	toolchains[msvc::key] = std::make_shared<msvc>();
+	tc = std::make_shared<msvc>();
+	if (tc->initialize())
+		toolchains[msvc::key] = tc;
 #endif
-	toolchains[gcc::key] = std::make_shared<gcc>();
+	tc = std::make_shared<gcc>();
+	if (tc->initialize())
+		toolchains[gcc::key] = tc;
+	if (toolchains.empty())
+	{
+		cbl::error("No toolchains discovered. Check verbose log for details.");
+		abort();
+	}
 }
 
 std::string toolchain::get_intermediate_path_for_cpptu(const char *source_path, const char *object_extension, const target &target, const configuration &cfg)

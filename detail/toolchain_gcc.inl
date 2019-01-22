@@ -16,20 +16,19 @@ struct gcc : public toolchain
 	{
 		// FIXME: This is completely unportable.
 		auto version = query_gcc_version("/usr/bin/g++");
-		if (version.major == 0)
-			abort();
-		compiler_dir = "/usr/bin";
+		compiler_dir = version.major != 0 ? "/usr/bin" : "";
 	}
 
-	void initialize(const configuration& cfg) override
+	bool initialize() override
 	{
 		pick_toolchain_versions();
 		
 		if (compiler_dir.empty())
 		{
-			cbl::error("No compiler set. You might be able to compile code without the platform SDK, but not without a compiler.");
-			abort();
+			cbl::log_verbose("GCC binary not found.");
+			return false;
 		}
+		return true;
 	}
 
 	cbl::deferred_process invoke_compiler(
@@ -194,23 +193,24 @@ protected:
 
 	static cbl::version query_gcc_version(const char *path)
 	{
-		static constexpr const char header[] = "gcc version ";
-
-		cbl::version v;
-
-		std::string buffer;
-		auto append_to_buffer = [&buffer](const void *data, size_t byte_count)
+		cbl::version v{ 0, 0, 0, 0, "" };
+		if (0 != cbl::fs::get_modification_timestamp(path))
 		{
-			buffer.insert(buffer.end(), (const char *)data, ((const char *)data) + byte_count);
-		};
+			static constexpr const char header[] = "gcc version ";
 
-		memset(&v, 0, sizeof(v));
-		if (0 == cbl::process::start_sync((std::string(path) + " -v").c_str(), append_to_buffer, append_to_buffer))
-		{
-			if (const char *vstr = strstr(buffer.c_str(), header))
-				v.parse(vstr + sizeof(header) - 1);
+			std::string buffer;
+			auto append_to_buffer = [&buffer](const void *data, size_t byte_count)
+			{
+				buffer.insert(buffer.end(), (const char *)data, ((const char *)data) + byte_count);
+			};
+
+			memset(&v, 0, sizeof(v));
+			if (0 == cbl::process::start_sync((std::string(path) + " -v").c_str(), append_to_buffer, append_to_buffer))
+			{
+				if (const char *vstr = strstr(buffer.c_str(), header))
+					v.parse(vstr + sizeof(header) - 1);
+			}
 		}
-			
 		return v;
 	}
 

@@ -157,10 +157,6 @@ std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_buil
 	assert(toolchains.find(used_tc) != toolchains.end() && "Unknown toolchain");
 	auto& tc = toolchains[used_tc];
 
-	{
-		MTR_SCOPE("toolchain", "initialize_toolchain");
-		tc->initialize(cfg);
-	}
 	return std::make_pair(
 		graph::generate_cpp_build_graph(target, cfg, tc),
 		tc

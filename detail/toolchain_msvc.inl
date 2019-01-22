@@ -20,6 +20,7 @@ struct msvc : public toolchain
 	{
 		using elem = std::pair<cbl::version, std::string>;
 		discovered_components sdks, ucrts, compilers;
+		// FIXME: Parallelize.
 		discover_windows_sdks(sdks, ucrts);
 		discover_compilers(compilers);
 
@@ -59,15 +60,16 @@ struct msvc : public toolchain
 			lib_dirs[component_compiler] = cbl::path::join(compiler_dir, "lib\\x64");
 	}
 
-	void initialize(const configuration& cfg) override
+	bool initialize() override
 	{
 		pick_toolchain_versions();
 		
 		if (compiler_dir.empty())
 		{
-			cbl::error("No compiler set. You might be able to compile code without Windows SDK, but not without a compiler.");
-			abort();
+			cbl::log_verbose("No MSVC compiler set. You might be able to compile code without Windows SDK, but not without a compiler.");
+			return false;
 		}
+		return true;
 	}
 
 	cbl::deferred_process invoke_compiler(

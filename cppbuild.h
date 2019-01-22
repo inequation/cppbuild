@@ -71,7 +71,7 @@ typedef std::pair<std::string, target_data> target;
 
 struct toolchain
 {
-	virtual void initialize(const configuration&) = 0;
+	virtual bool initialize() = 0;
 	virtual cbl::deferred_process invoke_compiler(
 		const target& target,
 		const std::string& object_path,
