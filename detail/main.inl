@@ -5,6 +5,7 @@
 
 void dump_builds(const target_map& t, const configuration_map& c)
 {
+	MTR_SCOPE("main", "dump_builds");
 	constexpr const char *types[] = { "Executable", "Static library", "Dynamic library" };
 	static_assert(sizeof(types) / sizeof(types[0]) - 1 == target_data::dynamic_library, "Missing string for target type");
 
@@ -139,6 +140,7 @@ namespace detail
 
 void dump_graph(std::shared_ptr<graph::action> root)
 {
+	MTR_SCOPE("main", "dump_graph");
 	detail::dump_action(root, 0);
 }
 
@@ -172,22 +174,25 @@ void cull_build(std::shared_ptr<graph::action>& root)
 	dump_graph(std::static_pointer_cast<graph::cpp_action>(root));*/
 
 	graph::cull_build_graph(root);
-	cbl::info("Build graph after culling:");
-	dump_graph(std::static_pointer_cast<graph::cpp_action>(root));
+	/*cbl::info("Build graph after culling:");
+	dump_graph(std::static_pointer_cast<graph::cpp_action>(root));*/
 
 	graph::save_timestamp_caches();
 }
 
 int execute_build(const target& target, std::shared_ptr<graph::action> root, const configuration& cfg, std::shared_ptr<toolchain> tc)
 {
-	int exit_code = graph::execute_build_graph(target, root, cfg, tc, nullptr, nullptr);
+	int exit_code = root
+		? graph::execute_build_graph(target, root, cfg, tc, nullptr, nullptr)
+		: (cbl::info("Target %s up to date", target.first.c_str()), 0);
+		
 	cbl::info("Build finished with code %d", exit_code);
 	return exit_code;
 }
 
-namespace detail
+namespace bootstrap
 {
-	std::pair<target, configuration> describe_bootstrap_target(toolchain_map& toolchains)
+	std::pair<target, configuration> describe(toolchain_map& toolchains)
 	{
 		using namespace cbl;
 
@@ -218,12 +223,12 @@ namespace detail
 		);
 	}
 
-	int bootstrap_build(toolchain_map& toolchains, int argc, const char *argv[])
+	int build(toolchain_map& toolchains, int argc, const char *argv[])
 	{
 		MTR_SCOPE("bootstrap", "bootstrap_build");
 		using namespace cbl;
 
-		auto bootstrap = describe_bootstrap_target(toolchains);
+		auto bootstrap = describe(toolchains);
 
 		auto build = setup_build(bootstrap.first, bootstrap.second, toolchains);
 #if CPPBUILD_GENERATION > 0	// Only cull the build graph once we have successfully bootstrapped.
@@ -254,7 +259,9 @@ namespace detail
 				cmdline += " _bootstrap_deploy "
 					+ std::to_string(cbl::process::get_current_pid()) + " "
 					+ cbl::process::get_current_executable_path() + " "
-					+ bootstrap.first.second.used_toolchain;
+					+ bootstrap.first.second.used_toolchain + " "
+					+ std::to_string(fileno(cbl::detail::log_file_stream)) + " "
+					+ std::to_string(fileno(cbl::detail::trace_file_stream)) + " ";
 				// Pass in any extra arguments we may have received.
 				for (int i = 1; i < argc; ++i)
 				{
@@ -289,7 +296,7 @@ namespace detail
 		}
 	}
 
-	int boostrap_deploy(int argc, char *argv[], const toolchain_map& toolchains)
+	int deploy(int argc, char *argv[], const toolchain_map& toolchains)
 	{
 		MTR_SCOPE("bootstrap", "bootstrap_deploy_exec");
 		// Finish the bootstrap deployment: 
@@ -307,7 +314,8 @@ namespace detail
 		{
 			cbl::info("Successful bootstrap deployment");
 			std::string cmdline = argv[3];
-			for (int i = 5; i < argc; ++i)
+			cmdline += " --append-logs";
+			for (int i = 7; i < argc; ++i)
 			{
 				cmdline += ' ';
 				cmdline += argv[i];
@@ -339,19 +347,30 @@ void print_version()
 
 int main(int argc, char *argv[])
 {
-	cbl::detail::rotate_traces();
+	const bool is_bootstrap_deployment = argc >= 7 && 0 == strcmp(argv[1], "_bootstrap_deploy");
+	const bool append_logs = argc > 1 && 0 == strcmp(argv[1], "--append-logs");
+	if (append_logs)
+	{
+		// FIXME: Get rid of this hack once proper support for configs is in.
+		--argc;
+		++argv;
+	}
+	
+	cbl::detail::rotate_traces(append_logs || is_bootstrap_deployment);
 	cbl::scheduler.Initialize();	// FIXME: Configurable thread count.
-	cbl::detail::rotate_logs();
-	cbl::detail::delete_old_logs_and_traces();
+	cbl::detail::rotate_logs(append_logs || is_bootstrap_deployment);
 
-	cbl::scoped_guard cleanup([]() { cbl::scheduler.WaitforAllAndShutdown(); });
+	cbl::detail::background_delete delete_old_logs_and_traces;
+	cbl::scheduler.AddTaskSetToPipe(&delete_old_logs_and_traces);
+
+	cbl::scoped_guard cleanup([](){ cbl::scheduler.WaitforAllAndShutdown(); });
 
 	toolchain_map toolchains;
 	discover_toolchains(toolchains);
 
-	if (argc >= 5 && 0 == strcmp(argv[1], "_bootstrap_deploy"))
+	if (is_bootstrap_deployment)
 	{
-		return detail::boostrap_deploy(argc, argv, toolchains);
+		return bootstrap::deploy(argc, argv, toolchains);
 	}
 
 	if (argc <= 1)
@@ -360,7 +379,7 @@ int main(int argc, char *argv[])
 	}
 
 	// If we were in need of bootstrapping, this call will terminate the process.
-	if (0 != detail::bootstrap_build(toolchains, argc, const_cast<const char**>(argv)))
+	if (0 != bootstrap::build(toolchains, argc, const_cast<const char**>(argv)))
 	{
 		cbl::error("FATAL: Failed to bootstrap cppbuild");
 		return (int)error_code::failed_bootstrap_build;
@@ -369,8 +388,10 @@ int main(int argc, char *argv[])
 	target_map targets;
 	configuration_map configs;
 
+	MTR_BEGIN("main", "describe");
 	auto arguments = describe(targets, configs, toolchains);
-	dump_builds(targets, configs);
+	MTR_END("main", "describe");
+	//dump_builds(targets, configs);
 
 	// Read target and configuration info from command line.
 	if (argc >= 2)

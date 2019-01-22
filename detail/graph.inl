@@ -655,13 +655,18 @@ namespace graph
 		{
 			std::string cache_path = detail::get_cache_path(key.first, key.second);
 			fs::mkdir(path::get_directory(cache_path.c_str()).c_str(), true);
-			if (FILE *serialized = fopen(cache_path.c_str(), "wb"))
+			MTR_BEGIN("cache", "before");
+			FILE *serialized = fopen(cache_path.c_str(), "wb");
+			MTR_END("cache", "before");
+			if (serialized)
 			{
 				detail::serialize_cache_items<detail::fwrite_wrapper, nullptr>(cache, serialized);
+				MTR_SCOPE("cache", "fclose");
 				fclose(serialized);
 			}
 			else
 			{
+				MTR_SCOPE("cache", "log");
 				log_verbose("Failed to open timestamp cache for writing to %s", cache_path.c_str());
 			}
 		});

@@ -8,6 +8,7 @@
 #include <mutex>
 #include <thread>
 #include <sstream>
+#include <chrono>
 #include "../cbl.h"
 
 #if defined(_WIN64)
@@ -287,6 +288,7 @@ namespace cbl
 	namespace detail
 	{
 		static FILE *log_file_stream;
+		static FILE *trace_file_stream;
 
 		class background_delete : public enki::ITaskSet
 		{
@@ -313,8 +315,8 @@ namespace cbl
 			std::string log_dir;
 
 		public:
-			background_delete(std::string log_directory)
-				: log_dir(log_directory)
+			background_delete()
+				: log_dir(path::join(path::get_cppbuild_cache_path(), "log"))
 			{}
 
 			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
@@ -367,12 +369,12 @@ namespace cbl
 				int y, M, d, h, m, s, us;
 				time::of_day(stamp, &y, &M, &d, &h, &m, &s, &us);
 				char new_name[36];
-				std::string old_file = path::join(log_dir, "cppbuild-");
+				std::string old_file = path::get_path_without_extension(file.c_str()) + '-';
 				uint64_t number = uint64_t(y) * 10000 + uint64_t(M) * 100 + uint64_t(d);
-				old_file += std::to_string(number) + "-";
+				old_file += std::to_string(number) + '-';
 				number = uint64_t(h) * 10000 + uint64_t(m) * 100 + uint64_t(s);
-				old_file += std::to_string(number) + "-";
-				old_file += std::to_string(us) + "." + ext;
+				old_file += std::to_string(number) + '-';
+				old_file += std::to_string(us) + '.' + ext;
 				if (!fs::move_file(file.c_str(), old_file.c_str(), fs::maintain_timestamps))
 				{
 					warning("Failed to rotate %s file %s to %s", ext, file.c_str(), old_file.c_str());
@@ -380,17 +382,30 @@ namespace cbl
 			}
 		}
 
-		void rotate_traces()
+		void rotate_traces(bool append_to_current)
 		{
 			// Rotate the latest log file to a sortable, timestamped format.
 			std::string log_dir = path::join(path::get_cppbuild_cache_path(), "log");
 			std::string log = path::join(log_dir, "cppbuild.json");
-			rotate(log_dir.c_str(), "json");
-			
-			mtr_init(log.c_str());
+
+			if (append_to_current)
+			{
+				// FIXME: Implement merging of JSONs.
+				//trace_file_stream = fopen(log.c_str(), "ab");
+			}
+			if (!trace_file_stream)
+			{	
+				rotate(log_dir.c_str(), "json");
+
+				trace_file_stream = fopen(log.c_str(), "wb");
+			}
+			// Make sure that handle inheritance doesn't block log rotation in the deploying child process.
+			cbl::fs::disinherit_stream(trace_file_stream);
+
+			mtr_init_from_stream(trace_file_stream);
 			atexit(mtr_shutdown);
-			MTR_META_PROCESS_NAME("cppbuild");
-			MTR_META_THREAD_NAME("main thread");
+			MTR_META_PROCESS_NAME(append_to_current ? "cppbuild (restarted)" : "cppbuild");
+			MTR_META_THREAD_NAME("Main Thread");
 
 			// Also register with the scheduler callbacks.
 			auto callbacks = cbl::scheduler.GetProfilerCallbacks();
@@ -404,24 +419,39 @@ namespace cbl
 			callbacks->waitStop = [](uint32_t thread_index) { MTR_END("task", "wait"); };
 		}
 
-		void rotate_logs()
+		void rotate_logs(bool append_to_current)
 		{
 			// Rotate the latest log file to a sortable, timestamped format.
 			std::string log_dir = path::join(path::get_cppbuild_cache_path(), "log");
 			std::string log = path::join(log_dir, "cppbuild.log");
-			rotate(log_dir.c_str(), "log");
+			if (append_to_current)
+			{
+				// Exponential back-off until the parent process terminates.
+				auto duration = std::chrono::microseconds(50);
+				for (int i = 0; i < 10; ++i)
+				{
+					log_file_stream = fopen(log.c_str(), "a");
+					if (log_file_stream)
+					{
+						break;
+					}
+					else
+					{
+						std::this_thread::sleep_for(duration);
+						duration *= 2;
+					}
+				}
+			}
+			if (!log_file_stream)
+			{
+				rotate(log_dir.c_str(), "log");
 
-			// Open the new stream.
-			log_file_stream = fopen(log.c_str(), "w");
+				// Open the new stream.
+				log_file_stream = fopen(log.c_str(), "w");
+			}
 			// Make sure that handle inheritance doesn't block log rotation in the deploying child process.
 			cbl::fs::disinherit_stream(log_file_stream);
 			atexit([]() { fclose(log_file_stream); });
-		}
-
-		void delete_old_logs_and_traces()
-		{
-			// Delete old log files. Fire and forget.
-			scheduler.AddTaskSetToPipe(new background_delete(path::join(path::get_cppbuild_cache_path(), "log")));
 		}
 
 		static constexpr severity compiled_log_level = severity::	// FIXME: Put in config.
@@ -591,5 +621,30 @@ namespace cbl
 			default: assert(!"Unknown severity"); info(fmt, label, float(duration) * 0.000001f); return;
 			}
 		}
+	}
+
+	template <typename loop_body>
+	void parallel_for(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting_to_threads)
+	{
+		class loop_task : public enki::ITaskSet
+		{
+			loop_body body;
+		public:
+			loop_task(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting)
+				: enki::ITaskSet(set_size, min_size_for_splitting)
+				, body(callable)
+			{}
+
+			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+			{
+				MTR_SCOPE_C("cbl", "parallel_for", "func", typeid(body).name());
+				for (auto i = range.start; i < range.end; ++i)
+					body(i);
+			}
+		};
+		loop_task loop(callable, set_size, min_size_for_splitting_to_threads);
+		scheduler.AddTaskSetToPipe(&loop);
+		//MTR_SCOPE("cbl", "parallel_for_wait");
+		scheduler.WaitforTask(&loop);
 	}
 };
