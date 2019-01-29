@@ -4,6 +4,25 @@
 	#error C++11 is required by cppbuild
 #endif
 
+#ifndef CPPBUILD_GENERATION
+	#define CPPBUILD_GENERATION	0
+#endif
+
+#include <string>
+#include <functional>
+#include <algorithm>
+#include <unordered_map>
+#include <vector>
+#include <memory>
+#include <cstdio>
+#include <cstdint>
+#include <cassert>
+#include <ctime>
+#include <cstring>
+#include <cinttypes>
+
+typedef std::vector<std::string> string_vector;
+
 enum class platform
 {
 	win64,
@@ -13,7 +32,28 @@ enum class platform
 	xbox1,
 };
 
-#include "detail/core.inl"
+struct version
+{
+	uint16_t major, minor, build, revision;
+	char tag[64];
+
+	bool operator==(const version& other) const;
+	bool operator<(const version& other) const;
+	bool parse(const char *str);
+	std::string to_string() const;
+};
+
+#define CPPBUILD_STRINGIFY(x)	CPPBUILD_STRINGIFY2(x)
+#define CPPBUILD_STRINGIFY2(x)	#x
+constexpr version cppbuild_version = { 0, 0, 0, 0,
+#if CPPBUILD_GENERATION
+	"gen" CPPBUILD_STRINGIFY(CPPBUILD_GENERATION)
+#else
+	"gen1"
+#endif
+};
+#undef CPPBUILD_STRINGIFY2
+#undef CPPBUILD_STRINGIFY
 
 struct configuration_data
 {
@@ -140,6 +180,7 @@ namespace graph
 	using timestamp_cache_entry = timestamp_cache::value_type;
 	bool query_dependency_cache(const target &target, const configuration &cfg, const std::string& source, std::function<void(const std::string &)> push_dep);
 	void insert_dependency_cache(const target &target, const configuration &cfg, const std::string& source, const dependency_timestamp_vector &deps);
+	void save_timestamp_caches();
 
 	std::shared_ptr<action> generate_cpp_build_graph(const target& target, const configuration& c, std::shared_ptr<struct toolchain> tc);
 	void cull_build_graph(std::shared_ptr<action>& root);
@@ -163,12 +204,19 @@ std::pair<std::string, std::string> describe(target_map& targets, configuration_
 //=============================================================================
 
 // Internal implementations
-#include "detail/cbl.inl"
-#include "detail/graph.inl"
-#include "detail/toolchain.inl"
-#include "detail/main.inl"
-#include "detail/enkiTS/src/TaskScheduler.cpp"
-extern "C"
-{
-#include "detail/minitrace/minitrace.c"
-}
+#if CPPBUILD_GENERATION < 2
+	#include "detail/core.cpp"
+	#include "detail/cbl.cpp"
+	#include "detail/cbl_win64.cpp"
+	#include "detail/cbl_linux.cpp"
+	#include "detail/graph.cpp"
+	#include "detail/toolchain.cpp"
+	#include "detail/toolchain_msvc.cpp"
+	#include "detail/toolchain_gcc.cpp"
+	#include "detail/main.cpp"
+	#include "detail/enkiTS/src/TaskScheduler.cpp"
+	extern "C"
+	{
+		#include "detail/minitrace/minitrace.c"
+	}
+#endif

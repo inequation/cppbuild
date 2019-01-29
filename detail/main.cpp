@@ -1,7 +1,14 @@
-#pragma once
-
-// Includes here are for the benefit of syntax highlighting systems, #pragma once prevents recursion.
 #include "../cppbuild.h"
+#include "../cbl.h"
+#include "detail.h"
+#include "cbl_detail.h"
+
+#if !defined(_GNU_SOURCE) && !defined(_BSD_SOURCE)
+	#include "getopt/getopt.h"
+#else
+	#include <unistd.h>
+	#include <getopt.h>
+#endif
 
 void dump_builds(const target_map& t, const configuration_map& c)
 {
@@ -201,7 +208,15 @@ namespace bootstrap
 		target_data target;
 		target.output = cppbuild;
 		target.type = target_data::executable;
-		target.sources = fvwrap("build.cpp");
+		target.sources = []()
+		{
+			auto detail_path = path::join("cppbuild", "detail");
+			auto sources = fs::enumerate_files(path::join(detail_path, "*.cpp").c_str());
+			sources.emplace_back(path::join(detail_path, path::join("enkiTS", path::join("src", "TaskScheduler.cpp"))));
+			sources.emplace_back(path::join(detail_path, path::join("minitrace", "minitrace.c")));
+			sources.emplace_back("build.cpp");
+			return sources;
+		};
 		target.used_toolchain = cbl::get_default_toolchain_for_host();
 
 		configuration cfg;
@@ -341,8 +356,85 @@ void print_version()
 	cbl::info("cppbuild version %s (" __DATE__ ", " __TIME__ ")", cppbuild_version.to_string().c_str());
 }
 
+void parse_args(int &argc, char **&argv)
+{
+	int c;
+	int digit_optind = 0;
+
+	while (true)
+	{
+		int this_option_optind = optind ? optind : 1;
+		int option_index = 0;
+		static struct option long_options[] =
+		{
+			{ "add",		required_argument,	0,	0 },
+			{ "append",		no_argument,		0,	0 },
+			{ "delete",		required_argument,	0,	0 },
+			{ "verbose",	no_argument,		0,	0 },
+			{ "create",		required_argument,	0,	'c'},
+			{ "file",		required_argument,	0,	0 },
+			{ 0,			0,					0,	0 }
+		};
+
+		c = getopt_long(argc, argv, "abc:d:012", long_options, &option_index);
+		
+		switch (c)
+		{
+		case -1:
+			return;
+		case 0:
+			printf("option %s", long_options[option_index].name);
+			if (optarg)
+				printf(" with arg %s", optarg);
+			printf("\n");
+			break;
+
+		case '0':
+		case '1':
+		case '2':
+			if (digit_optind != 0 && digit_optind != this_option_optind)
+				printf("digits occur in two different argv-elements.\n");
+			digit_optind = this_option_optind;
+			printf("option %c\n", c);
+			break;
+
+		case 'a':
+			printf("option a\n");
+			break;
+
+		case 'b':
+			printf("option b\n");
+			break;
+
+		case 'c':
+			printf("option c with value '%s'\n", optarg);
+			break;
+
+		case 'd':
+			printf("option d with value '%s'\n", optarg);
+			break;
+
+		case '?':
+			break;
+
+		default:
+			printf("?? getopt returned character code 0%o ??\n", c);
+		}
+	}
+
+	if (optind < argc)
+	{
+		printf("non-option ARGV-elements: ");
+		while (optind < argc)
+			printf("%s ", argv[optind++]);
+		printf("\n");
+	}
+}
+
 int main(int argc, char *argv[])
 {
+	parse_args(argc, argv);
+
 	const bool is_bootstrap_deployment = argc >= 7 && 0 == strcmp(argv[1], "_bootstrap_deploy");
 	const bool append_logs = argc > 1 && 0 == strcmp(argv[1], "--append-logs");
 	if (append_logs)

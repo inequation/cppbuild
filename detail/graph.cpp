@@ -1,7 +1,5 @@
-#pragma once
-
-// Includes here are for the benefit of syntax highlighting systems, #pragma once prevents recursion.
 #include "../cppbuild.h"
+#include "../cbl.h"
 
 #include <mutex>
 #include <atomic>
@@ -242,15 +240,15 @@ namespace graph
 		class build_task_with_deps : public build_task
 		{
 		protected:
-			void dispatch_subtasks_and_wait(enki::TaskSetPartition range, uint32_t threadnum)
+			void dispatch_subtasks_and_wait()
 			{
 				MTR_SCOPE("build", "subtask_dispatch");
 				// FIXME: Creating a ton of task sets is excessive, we should create one task set and feed it arrays instead.
 				std::vector<std::shared_ptr<enki::ITaskSet>> subtasks;
-				subtasks.reserve(range.end - range.start);
-				for (uint32_t i = range.start; i < range.end; ++i)
+				subtasks.reserve(root->inputs.size());
+				for (auto i : root->inputs)
 				{
-					if (auto subtask = enqueue_build_tasks(ctx, root->inputs[i]))
+					if (auto subtask = enqueue_build_tasks(ctx, i))
 						subtasks.push_back(subtask);
 				}
 				// Issue the subtasks.
@@ -269,14 +267,13 @@ namespace graph
 			}
 
 		public:
-			build_task_with_deps(build_context &context, std::shared_ptr<action> root_action, cbl::deferred_process work = nullptr,
-				uint32_t min_size_for_splitting_to_threads = 1)
-				: build_task(context, root_action, work, root_action->inputs.size(), min_size_for_splitting_to_threads)
+			build_task_with_deps(build_context &context, std::shared_ptr<action> root_action, cbl::deferred_process work = nullptr)
+				: build_task(context, root_action, work, 1)
 			{}
 
 			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
 			{
-				dispatch_subtasks_and_wait(range, threadnum);
+				dispatch_subtasks_and_wait();
 				if (exit_code == 0)
 					// Dependencies ran correctly, run our own stuff.
 					build_task::ExecuteRange(range, threadnum);
@@ -346,7 +343,7 @@ namespace graph
 			{
 				// Only run subtasks.
 				// TODO: Revise this if we ever need to actually spawn a process here.
-				dispatch_subtasks_and_wait(range, threadnum);
+				dispatch_subtasks_and_wait();
 			}
 		};
 

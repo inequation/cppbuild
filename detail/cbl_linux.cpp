@@ -1,30 +1,25 @@
-#pragma once
-
-// Includes here are for the benefit of syntax highlighting systems, #pragma once prevents recursion.
-#include "../cppbuild.h"
-
 #if !defined(__linux__) && defined(__INTELLISENSE__)
 	#define __linux__	// Get correct syntax highlighting in MSVS.
 #endif
 
-#if !defined(__linux__)
-	#error This file should only be included on the Linux platform
-#else
-	#include <fcntl.h>
-	#include <glob.h>
-	#include <limits.h>
-	#include <sched.h>
-	#include <spawn.h>
-	#include <time.h>
-	#include <stdlib.h>
-	#include <unistd.h>
-	#include <wordexp.h>
-	#include <sys/mman.h>
-	#include <sys/stat.h>
-	#include <sys/time.h>
-	#include <sys/types.h>
-	#include <sys/wait.h>
-#endif
+#if defined(__linux__)
+
+#include "../cppbuild.h"
+
+#include <fcntl.h>
+#include <glob.h>
+#include <limits.h>
+#include <sched.h>
+#include <spawn.h>
+#include <time.h>
+#include <stdlib.h>
+#include <unistd.h>
+#include <wordexp.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 namespace cbl
 {
@@ -35,10 +30,6 @@ namespace cbl
 
 	namespace path
 	{
-		constexpr const char get_path_separator() { return '/'; }
-
-		constexpr const char get_alt_path_separator() { return get_path_separator(); }
-
 		bool is_path_separator(char c) { return c == '/'; }
 
 		std::string get_absolute(const char *path)
@@ -589,3 +580,5 @@ namespace cbl
 		}
 	}
 }
+
+#endif	// defined(__linux__)

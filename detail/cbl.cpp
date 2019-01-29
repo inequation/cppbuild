@@ -1,6 +1,3 @@
-#pragma once
-
-// Includes here are for the benefit of syntax highlighting systems, #pragma once prevents recursion.
 #include "../cppbuild.h"
 
 #include <cstdarg>
@@ -10,14 +7,7 @@
 #include <sstream>
 #include <chrono>
 #include "../cbl.h"
-
-#if defined(_WIN64)
-	#include "cbl_win64.inl"
-#elif defined(__linux__)
-	#include "cbl_linux.inl"
-#else
-	#error Unsupported platform
-#endif
+#include "cbl_detail.h"
 
 namespace cbl
 {
@@ -287,77 +277,66 @@ namespace cbl
 
 	namespace detail
 	{
-		static FILE *log_file_stream;
-		static FILE *trace_file_stream;
+		FILE *log_file_stream;
+		FILE *trace_file_stream;
 
-		class background_delete : public enki::ITaskSet
+		background_delete::worker::worker(const string_vector &list_)
+			: enki::ITaskSet(list_.size(), 100)
+			, list(list_)
+		{}
+
+		void background_delete::worker::ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum)
 		{
-			class worker : public enki::ITaskSet
+			MTR_SCOPE("rotate_logs", "background_delete");
+			for (auto i = range.start; i < range.end; ++i)
 			{
-				const string_vector &list;
-			public:
-				worker(const string_vector &list_)
-					: enki::ITaskSet(list_.size(), 100)
-					, list(list_)
-				{}
-
-				virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-				{
-					MTR_SCOPE("rotate_logs", "background_delete");
-					for (auto i = range.start; i < range.end; ++i)
-					{
-						if (!fs::delete_file(list[i].c_str()))
-							warning("Failed to delete old log file %s", list[i].c_str());
-					}
-				}
-			};
-
-			std::string log_dir;
-
-		public:
-			background_delete()
-				: log_dir(path::join(path::get_cppbuild_cache_path(), "log"))
-			{}
-
-			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-			{
-				string_vector to_delete;
-
-				static const char *globs[] = { "*.log", "*.json" };
-				for (const char *glob : globs)
-				{
-					auto old_logs = cbl::fs::enumerate_files(cbl::path::join(log_dir, glob).c_str());
-					constexpr size_t max_old_log_files = 10;	// TODO: Put this in config.
-					if (old_logs.size() > max_old_log_files)
-					{
-						std::sort(old_logs.begin(), old_logs.end(),
-							[](const std::string& a, const std::string& b)
-						{
-							return fs::get_modification_timestamp(a.c_str())
-								< fs::get_modification_timestamp(b.c_str());
-						});
-						to_delete.insert(to_delete.end(), old_logs.begin(), old_logs.end() - max_old_log_files);
-					}
-				}
-
-				if (!to_delete.empty())
-				{
-					worker task(to_delete);
-					cbl::scheduler.AddTaskSetToPipe(&task);
-					cbl::scheduler.WaitforTask(&task);
-				}
-
-				// Once we're done processing, delete ourselves.
-				// FIXME: Can't delete ourselves because the scheduler makes an atomic write afterwards.
-#if 0
-				delete this;
-#else
-				// The next best thing is leaking just the string, but not its data.
-				log_dir.clear();
-				log_dir.shrink_to_fit();
-#endif
+				if (!fs::delete_file(list[i].c_str()))
+					warning("Failed to delete old log file %s", list[i].c_str());
 			}
-		};
+		}
+		
+		background_delete::background_delete()
+			: log_dir(path::join(path::get_cppbuild_cache_path(), "log"))
+		{}
+
+		void background_delete::ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum)
+		{
+			string_vector to_delete;
+
+			static const char *globs[] = { "*.log", "*.json" };
+			for (const char *glob : globs)
+			{
+				auto old_logs = cbl::fs::enumerate_files(cbl::path::join(log_dir, glob).c_str());
+				constexpr size_t max_old_log_files = 10;	// TODO: Put this in config.
+				if (old_logs.size() > max_old_log_files)
+				{
+					std::sort(old_logs.begin(), old_logs.end(),
+						[](const std::string& a, const std::string& b)
+					{
+						return fs::get_modification_timestamp(a.c_str())
+							< fs::get_modification_timestamp(b.c_str());
+					});
+					to_delete.insert(to_delete.end(), old_logs.begin(), old_logs.end() - max_old_log_files);
+				}
+			}
+
+			if (!to_delete.empty())
+			{
+				worker task(to_delete);
+				cbl::scheduler.AddTaskSetToPipe(&task);
+				cbl::scheduler.WaitforTask(&task);
+			}
+
+			// Once we're done processing, delete ourselves.
+			// FIXME: Can't delete ourselves because the scheduler makes an atomic write afterwards.
+#if 0
+			delete this;
+#else
+			// The next best thing is leaking just the string, but not its data.
+			log_dir.clear();
+			log_dir.shrink_to_fit();
+#endif
+		}
 
 		void rotate(const char *log_dir, const char *ext)
 		{
@@ -623,28 +602,5 @@ namespace cbl
 		}
 	}
 
-	template <typename loop_body>
-	void parallel_for(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting_to_threads)
-	{
-		class loop_task : public enki::ITaskSet
-		{
-			loop_body body;
-		public:
-			loop_task(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting)
-				: enki::ITaskSet(set_size, min_size_for_splitting)
-				, body(callable)
-			{}
-
-			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-			{
-				MTR_SCOPE_C("cbl", "parallel_for", "func", typeid(body).name());
-				for (auto i = range.start; i < range.end; ++i)
-					body(i);
-			}
-		};
-		loop_task loop(callable, set_size, min_size_for_splitting_to_threads);
-		scheduler.AddTaskSetToPipe(&loop);
-		//MTR_SCOPE("cbl", "parallel_for_wait");
-		scheduler.WaitforTask(&loop);
-	}
+	enki::TaskScheduler scheduler;
 };

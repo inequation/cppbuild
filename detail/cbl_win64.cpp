@@ -1,20 +1,16 @@
-#pragma once
+#if defined(_WIN64)
 
-// Includes here are for the benefit of syntax highlighting systems, #pragma once prevents recursion.
 #include "../cppbuild.h"
+#include "../cbl.h"
 
-#if !defined(_WIN64)
-	#error This file should only be included on the Win64 platform
-#else
-	#define WIN32_LEAN_AND_MEAN
-	#define NOMINMAX
-	#include <Windows.h>
-	#include <io.h>
-	#pragma comment(lib, "advapi32.lib")
-	#pragma comment(lib, "oleaut32.lib")
-	#pragma comment(lib, "ole32.lib")
-	#pragma comment(lib, "shell32.lib")
-#endif
+#define WIN32_LEAN_AND_MEAN
+#define NOMINMAX
+#include <Windows.h>
+#include <io.h>
+#pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "oleaut32.lib")
+#pragma comment(lib, "ole32.lib")
+#pragma comment(lib, "shell32.lib")
 
 namespace cbl
 {
@@ -25,16 +21,6 @@ namespace cbl
 
 	namespace path
 	{
-		constexpr const char get_path_separator()
-		{
-			return '\\';
-		}
-
-		constexpr const char get_alt_path_separator()
-		{
-			return '/';
-		}
-
 		bool is_path_separator(char c)
 		{
 			// A lot of C++ code will use forward slashes, so support that as well.
@@ -736,3 +722,5 @@ namespace cbl
 		}
 	}
 }
+
+#endif	// defined(_WIN64)

@@ -9,8 +9,13 @@ namespace cbl
 {
 	namespace path
 	{
-		constexpr const char get_path_separator();
-		constexpr const char get_alt_path_separator();
+#if defined(_WIN64)
+		constexpr const char get_path_separator() { return '\\'; }
+		constexpr const char get_alt_path_separator() { return '/'; }
+#else
+		constexpr const char get_path_separator() { return '/'; }
+		constexpr const char get_alt_path_separator() { return get_path_separator(); }
+#endif
 		bool is_path_separator(char c);
 
 		std::string get_extension(const char *path);
@@ -31,6 +36,7 @@ namespace cbl
 		{
 			return join(join(a, b), args...);
 		}
+		std::string join(const string_vector &elements);
 
 
 		// Returns the current working directory.
@@ -52,10 +58,12 @@ namespace cbl
 			overwrite = 0x1,
 			maintain_timestamps = 0x2
 		};
-		copy_flags operator|(copy_flags a, copy_flags b) { return (copy_flags)((int)a | (int)b); }
+		inline copy_flags operator|(copy_flags a, copy_flags b) { return (copy_flags)((int)a | (int)b); }
 		bool copy_file(const char *existing_path, const char *new_path, copy_flags flags);
 		bool move_file(const char *existing_path, const char *new_path, copy_flags flags);
 		bool delete_file(const char *path);
+
+		void disinherit_stream(FILE *stream);
 	};
 
 	// Factories for generating typical basic configurations.
@@ -163,11 +171,11 @@ namespace cbl
 		static void wait_for_pid(uint32_t pid);
 	};
 
-	constexpr platform get_host_platform();
-	constexpr const char *get_platform_str(platform);
-	constexpr const char *get_host_platform_str();
+	extern constexpr platform get_host_platform();
+	extern constexpr const char *get_platform_str(platform);
+	extern constexpr const char *get_host_platform_str();
 
-	constexpr const char *get_default_toolchain_for_host();
+	extern constexpr const char *get_default_toolchain_for_host();
 
 	size_t combine_hash(size_t a, size_t b);
 
@@ -227,12 +235,34 @@ namespace cbl
 	}
 
 	// Multithreaded task scheduler.
-	enki::TaskScheduler scheduler;
+	extern enki::TaskScheduler scheduler;
 
 	// Helper construct for parallelizing trivial for loops. Loop body is a callable with the following
 	// signature: void loop_body(uint32_t index);
 	template <typename loop_body>
-	void parallel_for(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting_to_threads = 1);
+	void parallel_for(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting_to_threads = 1)
+	{
+		class loop_task : public enki::ITaskSet
+		{
+			loop_body body;
+		public:
+			loop_task(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting)
+				: enki::ITaskSet(set_size, min_size_for_splitting)
+				, body(callable)
+			{}
+
+			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+			{
+				MTR_SCOPE_C("cbl", "parallel_for", "func", typeid(body).name());
+				for (auto i = range.start; i < range.end; ++i)
+					body(i);
+			}
+		};
+		loop_task loop(callable, set_size, min_size_for_splitting_to_threads);
+		scheduler.AddTaskSetToPipe(&loop);
+		//MTR_SCOPE("cbl", "parallel_for_wait");
+		scheduler.WaitforTask(&loop);
+	}
 
 	// Helper construct that (ab)uses RAII to run some code when going out of scope.
 	struct scoped_guard
@@ -243,6 +273,19 @@ namespace cbl
 	private:
 		scoped_guard operator=(const scoped_guard &) = delete;
 		callable stored;
+	};
+}
+
+namespace std
+{
+	template <> struct hash<version>
+	{
+		size_t operator()(const version &v) const
+		{
+			using namespace cbl;
+			hash<size_t> hasher;
+			return combine_hash(hasher(v.major), combine_hash(hasher(v.minor), combine_hash(hasher(v.build), hasher(v.revision))));
+		}
 	};
 }
 
