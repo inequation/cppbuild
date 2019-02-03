@@ -210,6 +210,8 @@ namespace cbl
 
 	// Concatenates the string using the specified glue string.
 	std::string join(const string_vector& v, const char *glue);
+	// Splits a string along separators.
+	string_vector split(const char *str, char separator);
 
 	namespace time
 	{

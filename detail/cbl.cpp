@@ -8,6 +8,7 @@
 #include <chrono>
 #include "../cbl.h"
 #include "cbl_detail.h"
+#include "detail.h"
 
 namespace cbl
 {
@@ -275,6 +276,44 @@ namespace cbl
 		return result;
 	}
 
+	string_vector split(const char *str, char separator)
+	{
+		string_vector elements;
+		size_t len = strlen(str);
+		const char *begin = str;
+		for (size_t i = 0; i < len; ++i)
+		{
+			if (str + i < begin)
+			{
+				continue;
+			}
+			if (str[i] == separator)
+			{
+				if (i == 0)
+				{
+					continue;
+				}
+
+				std::string new_element(begin, str + i - begin);
+				if (!elements.empty() && elements.back().length() == 0)
+				{
+					elements.back() = std::move(new_element);
+				}
+				else
+				{
+					elements.push_back(new_element);
+				}
+
+				begin = str + i + 1;
+			}
+		}
+		if (*begin)
+		{
+			elements.push_back(begin);
+		}
+		return elements;
+	}
+
 	namespace detail
 	{
 		FILE *log_file_stream;
@@ -433,19 +472,19 @@ namespace cbl
 			atexit([]() { fclose(log_file_stream); });
 		}
 
-		static constexpr severity compiled_log_level = severity::	// FIXME: Put in config.
+		static constexpr severity compiled_log_level = severity::
 #if _DEBUG
 			debug
 #else
 			verbose
 #endif
 			;
-		static severity runtime_log_level = static_cast<severity>((int)compiled_log_level + 1);	// FIXME: Put in config.
 
 		// Logging implementation. Thread safe at the cost of a mutex lock around the actual buffer emission.
 		template<severity severity>
 		void log(const char *fmt, va_list va)
 		{
+			cbl::severity runtime_log_level = static_cast<cbl::severity>(g_options.log_level.val.as_int32);
 			if (compiled_log_level <= severity && runtime_log_level <= severity)
 			{
 				std::ostringstream thread_id;

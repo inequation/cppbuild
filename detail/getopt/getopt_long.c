@@ -29,7 +29,7 @@
 
 // This file includes trivial modifications to compile in C++ mode.
 
-#include "getopt/getopt.h"
+#include "getopt.h"
 
 #include <assert.h>
 #include <errno.h>

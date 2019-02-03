@@ -219,4 +219,8 @@ std::pair<std::string, std::string> describe(target_map& targets, configuration_
 	{
 		#include "detail/minitrace/minitrace.c"
 	}
+	#if !defined(_GNU_SOURCE) && !defined(_BSD_SOURCE)
+		#include "detail/getopt/getopt.c"
+		#include "detail/getopt/getopt_long.c"
+	#endif
 #endif

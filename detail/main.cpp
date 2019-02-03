@@ -3,13 +3,6 @@
 #include "detail.h"
 #include "cbl_detail.h"
 
-#if !defined(_GNU_SOURCE) && !defined(_BSD_SOURCE)
-	#include "getopt/getopt.h"
-#else
-	#include <unistd.h>
-	#include <getopt.h>
-#endif
-
 void dump_builds(const target_map& t, const configuration_map& c)
 {
 	MTR_SCOPE("main", "dump_builds");
@@ -214,6 +207,8 @@ namespace bootstrap
 			auto sources = fs::enumerate_files(path::join(detail_path, "*.cpp").c_str());
 			sources.emplace_back(path::join(detail_path, path::join("enkiTS", path::join("src", "TaskScheduler.cpp"))));
 			sources.emplace_back(path::join(detail_path, path::join("minitrace", "minitrace.c")));
+			sources.emplace_back(path::join(detail_path, path::join("getopt", "getopt.c")));
+			sources.emplace_back(path::join(detail_path, path::join("getopt", "getopt_long.c")));
 			sources.emplace_back("build.cpp");
 			return sources;
 		};
@@ -267,12 +262,10 @@ namespace bootstrap
 			{
 				MTR_SCOPE("bootstrap", "bootstrap_deploy_dispatch");
 				std::string cmdline = bootstrap.first.second.output;
-				cmdline += " _bootstrap_deploy "
-					+ std::to_string(cbl::process::get_current_pid()) + " "
-					+ cbl::process::get_current_executable_path() + " "
-					+ bootstrap.first.second.used_toolchain + " "
-					+ std::to_string(fileno(cbl::detail::log_file_stream)) + " "
-					+ std::to_string(fileno(cbl::detail::trace_file_stream)) + " ";
+				cmdline += " --bootstrap-deploy="
+					+ std::to_string(cbl::process::get_current_pid()) + ","
+					+ "\"" + cbl::process::get_current_executable_path() + "\","
+					+ bootstrap.first.second.used_toolchain;
 				// Pass in any extra arguments we may have received.
 				for (int i = 1; i < argc; ++i)
 				{
@@ -309,144 +302,83 @@ namespace bootstrap
 
 	int deploy(int argc, char *argv[], const toolchain_map& toolchains)
 	{
-		MTR_SCOPE("bootstrap", "bootstrap_deploy_exec");
-		// Finish the bootstrap deployment: 
-		uint32_t parent_pid = atoi(argv[2]);
-		cbl::process::wait_for_pid(parent_pid);
-		auto it = toolchains.find(argv[4]);
-		if (it == toolchains.end())
+		using namespace cbl;
+		MTR_SCOPE_FUNC_S("deployment_params", g_options.bootstrap_deploy.val.as_str_ptr);
+		// Finish the bootstrap deployment:
+		assert(nullptr != g_options.bootstrap_deploy.val.as_str_ptr);
+		string_vector params = split(g_options.bootstrap_deploy.val.as_str_ptr, ',');
+		if (params.size() == 3)
 		{
-			return (int)error_code::failed_bootstrap_bad_toolchain;
-		}
-		std::shared_ptr<toolchain> tc = it->second;
-		if (tc->deploy_executable_with_debug_symbols(
-			cbl::process::get_current_executable_path().c_str(),
-			argv[3]))
-		{
-			cbl::info("Successful bootstrap deployment");
-			std::string cmdline = argv[3];
-			cmdline += " --append-logs";
-			for (int i = 7; i < argc; ++i)
+			// Params' format: <parent pid>,<original cppbuild executable>,<toolchain used>
+			uint32_t parent_pid = atoi(params[0].c_str());
+			process::wait_for_pid(parent_pid);
+			auto it = toolchains.find(params[2].c_str());
+			if (it == toolchains.end())
 			{
-				cmdline += ' ';
-				cmdline += argv[i];
+				return (int)error_code::failed_bootstrap_bad_toolchain;
 			}
-			auto p = cbl::process::start_async(cmdline.c_str());
-			if (p)
+			std::shared_ptr<toolchain> tc = it->second;
+			if (tc->deploy_executable_with_debug_symbols(
+				process::get_current_executable_path().c_str(),
+				params[1].c_str()))
 			{
-				p->detach();
-				return 0;
+				info("Successful bootstrap deployment");
+				std::string cmdline = params[1];
+				cmdline += " --append-logs";
+				for (int i = 3; i < argc; ++i)
+				{
+					cmdline += ' ';
+					cmdline += argv[i];
+				}
+				auto p = process::start_async(cmdline.c_str());
+				if (p)
+				{
+					p->detach();
+					return 0;
+				}
+				else
+				{
+					error("Failed to respawn after deployment");
+					return (int)error_code::failed_bootstrap_respawn;
+				}
 			}
 			else
 			{
-				cbl::error("Failed to respawn after deployment");
-				return (int)error_code::failed_bootstrap_respawn;
+				error("Failed to overwrite the cppbuild executable");
+				return (int)error_code::failed_bootstrap_deployment;
 			}
 		}
 		else
 		{
-			cbl::error("Failed to overwrite the cppbuild executable");
+			error("Bad deployment parameters: '%s'", g_options.bootstrap_deploy.val.as_str_ptr);
 			return (int)error_code::failed_bootstrap_deployment;
 		}
 	}
 };
 
-void print_version()
-{
-	cbl::info("cppbuild version %s (" __DATE__ ", " __TIME__ ")", cppbuild_version.to_string().c_str());
-}
-
-void parse_args(int &argc, char **&argv)
-{
-	int c;
-	int digit_optind = 0;
-
-	while (true)
-	{
-		int this_option_optind = optind ? optind : 1;
-		int option_index = 0;
-		static struct option long_options[] =
-		{
-			{ "add",		required_argument,	0,	0 },
-			{ "append",		no_argument,		0,	0 },
-			{ "delete",		required_argument,	0,	0 },
-			{ "verbose",	no_argument,		0,	0 },
-			{ "create",		required_argument,	0,	'c'},
-			{ "file",		required_argument,	0,	0 },
-			{ 0,			0,					0,	0 }
-		};
-
-		c = getopt_long(argc, argv, "abc:d:012", long_options, &option_index);
-		
-		switch (c)
-		{
-		case -1:
-			return;
-		case 0:
-			printf("option %s", long_options[option_index].name);
-			if (optarg)
-				printf(" with arg %s", optarg);
-			printf("\n");
-			break;
-
-		case '0':
-		case '1':
-		case '2':
-			if (digit_optind != 0 && digit_optind != this_option_optind)
-				printf("digits occur in two different argv-elements.\n");
-			digit_optind = this_option_optind;
-			printf("option %c\n", c);
-			break;
-
-		case 'a':
-			printf("option a\n");
-			break;
-
-		case 'b':
-			printf("option b\n");
-			break;
-
-		case 'c':
-			printf("option c with value '%s'\n", optarg);
-			break;
-
-		case 'd':
-			printf("option d with value '%s'\n", optarg);
-			break;
-
-		case '?':
-			break;
-
-		default:
-			printf("?? getopt returned character code 0%o ??\n", c);
-		}
-	}
-
-	if (optind < argc)
-	{
-		printf("non-option ARGV-elements: ");
-		while (optind < argc)
-			printf("%s ", argv[optind++]);
-		printf("\n");
-	}
-}
-
 int main(int argc, char *argv[])
 {
-	parse_args(argc, argv);
+	int first_non_opt_arg = parse_args(argc, argv);
 
-	const bool is_bootstrap_deployment = argc >= 7 && 0 == strcmp(argv[1], "_bootstrap_deploy");
-	const bool append_logs = argc > 1 && 0 == strcmp(argv[1], "--append-logs");
-	if (append_logs)
+	if (g_options.version.val.as_bool)
 	{
-		// FIXME: Get rid of this hack once proper support for configs is in.
-		--argc;
-		++argv;
+		print_version();
+		exit(0);
 	}
-	
-	cbl::detail::rotate_traces(append_logs || is_bootstrap_deployment);
-	cbl::scheduler.Initialize();	// FIXME: Configurable thread count.
-	cbl::detail::rotate_logs(append_logs || is_bootstrap_deployment);
+
+	if (g_options.help.val.as_bool)
+	{
+		print_usage(argv[0]);
+		exit(0);
+	}
+
+	const bool append = g_options.append_logs.val.as_bool || g_options.bootstrap_deploy.val.as_bool;
+	cbl::detail::rotate_traces(append);
+	if (g_options.jobs.val.as_int32 > 0)
+		cbl::scheduler.Initialize(g_options.jobs.val.as_int32);
+	else
+		cbl::scheduler.Initialize();
+	cbl::detail::rotate_logs(append);
 
 	cbl::detail::background_delete delete_old_logs_and_traces;
 	cbl::scheduler.AddTaskSetToPipe(&delete_old_logs_and_traces);
@@ -456,18 +388,13 @@ int main(int argc, char *argv[])
 	toolchain_map toolchains;
 	discover_toolchains(toolchains);
 
-	if (is_bootstrap_deployment)
+	if (g_options.bootstrap_deploy.val.as_str_ptr)
 	{
-		return bootstrap::deploy(argc, argv, toolchains);
-	}
-
-	if (argc <= 1)
-	{
-		print_version();
+		return bootstrap::deploy(argc - first_non_opt_arg, argv + first_non_opt_arg, toolchains);
 	}
 
 	// If we were in need of bootstrapping, this call will terminate the process.
-	if (0 != bootstrap::build(toolchains, argc, const_cast<const char**>(argv)))
+	if (0 != bootstrap::build(toolchains, argc - first_non_opt_arg, const_cast<const char**>(argv + first_non_opt_arg)))
 	{
 		cbl::error("FATAL: Failed to bootstrap cppbuild");
 		return (int)error_code::failed_bootstrap_build;
@@ -482,13 +409,13 @@ int main(int argc, char *argv[])
 	//dump_builds(targets, configs);
 
 	// Read target and configuration info from command line.
-	if (argc >= 2)
+	if (first_non_opt_arg < argc)
 	{
-		arguments.first = argv[1];
+		arguments.first = argv[first_non_opt_arg];
 	}
-	if (argc >= 3)
+	if (first_non_opt_arg + 1 < argc)
 	{
-		arguments.second = argv[2];
+		arguments.second = argv[first_non_opt_arg + 1];
 	}
 
 	auto target = targets.find(arguments.first);
