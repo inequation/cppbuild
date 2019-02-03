@@ -1,7 +1,6 @@
 #include "../cppbuild.h"
 #include "../cbl.h"
 #include "detail.h"
-#include "cbl_detail.h"
 
 void dump_builds(const target_map& t, const configuration_map& c)
 {
@@ -303,7 +302,11 @@ namespace bootstrap
 	int deploy(int argc, char *argv[], const toolchain_map& toolchains)
 	{
 		using namespace cbl;
-		MTR_SCOPE_FUNC_S("deployment_params", g_options.bootstrap_deploy.val.as_str_ptr);
+		std::string logged_params = g_options.bootstrap_deploy.val.as_str_ptr;
+		// Avoid JSON escape sequence issues.
+		for (auto& c : logged_params) { if (c == '\\') c = '/'; }
+		MTR_SCOPE_FUNC_S("deployment_params", logged_params.c_str());
+
 		// Finish the bootstrap deployment:
 		assert(nullptr != g_options.bootstrap_deploy.val.as_str_ptr);
 		string_vector params = split(g_options.bootstrap_deploy.val.as_str_ptr, ',');
@@ -373,14 +376,14 @@ int main(int argc, char *argv[])
 	}
 
 	const bool append = g_options.append_logs.val.as_bool || g_options.bootstrap_deploy.val.as_bool;
-	cbl::detail::rotate_traces(append);
+	rotate_traces(append);
 	if (g_options.jobs.val.as_int32 > 0)
 		cbl::scheduler.Initialize(g_options.jobs.val.as_int32);
 	else
 		cbl::scheduler.Initialize();
-	cbl::detail::rotate_logs(append);
+	rotate_logs(append);
 
-	cbl::detail::background_delete delete_old_logs_and_traces;
+	cppbuild::background_delete delete_old_logs_and_traces;
 	cbl::scheduler.AddTaskSetToPipe(&delete_old_logs_and_traces);
 
 	cbl::scoped_guard cleanup([](){ cbl::scheduler.WaitforAllAndShutdown(); });

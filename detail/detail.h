@@ -86,9 +86,31 @@ namespace cppbuild
 	private:
 		const option terminator = { (option::option_type)0, 0 };
 	};
+
+	class background_delete : public enki::ITaskSet
+	{
+		class worker : public enki::ITaskSet
+		{
+			const string_vector &list;
+		public:
+			worker(const string_vector &list_);
+
+			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override;
+		};
+
+		std::string log_dir;
+
+	public:
+		background_delete();
+
+		virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override;
+	};
 };
 
 extern cppbuild::options g_options;
 extern int parse_args(int &argc, char **&argv);
 extern void print_version();
 extern void print_usage(const char *argv0);
+
+extern void rotate_traces(bool append_to_current);
+extern void rotate_logs(bool append_to_current);

@@ -9,6 +9,9 @@
 	#include <getopt.h>
 #endif
 
+#include <chrono>
+#include <thread>
+
 bool version::operator==(const version& other) const
 {
 	return 0 == memcmp(this, &other, sizeof(*this));
@@ -233,4 +236,211 @@ int parse_args(int &argc, char **&argv)
 	}
 
 	return optind;
+}
+
+namespace cppbuild
+{
+	using namespace cbl;
+
+	background_delete::worker::worker(const string_vector &list_)
+		: enki::ITaskSet(list_.size(), 100)
+		, list(list_)
+	{}
+
+	void background_delete::worker::ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum)
+	{
+		MTR_SCOPE("rotate_logs", "background_delete");
+		for (auto i = range.start; i < range.end; ++i)
+		{
+			if (!fs::delete_file(list[i].c_str()))
+				warning("Failed to delete old log file %s", list[i].c_str());
+		}
+	}
+
+	background_delete::background_delete()
+		: log_dir(path::join(path::get_cppbuild_cache_path(), "log"))
+	{}
+
+	void background_delete::ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum)
+	{
+		string_vector to_delete;
+
+		static const char *globs[] = { "*.log", "*.json" };
+		for (const char *glob : globs)
+		{
+			auto old_logs = cbl::fs::enumerate_files(cbl::path::join(log_dir, glob).c_str());
+			constexpr size_t max_old_log_files = 10;	// TODO: Put this in config.
+			if (old_logs.size() > max_old_log_files)
+			{
+				std::sort(old_logs.begin(), old_logs.end(),
+					[](const std::string& a, const std::string& b)
+				{
+					return fs::get_modification_timestamp(a.c_str())
+						< fs::get_modification_timestamp(b.c_str());
+				});
+				to_delete.insert(to_delete.end(), old_logs.begin(), old_logs.end() - max_old_log_files);
+			}
+		}
+
+		if (!to_delete.empty())
+		{
+			worker task(to_delete);
+			cbl::scheduler.AddTaskSetToPipe(&task);
+			cbl::scheduler.WaitforTask(&task);
+		}
+
+		// Once we're done processing, delete ourselves.
+		// FIXME: Can't delete ourselves because the scheduler makes an atomic write afterwards.
+#if 0
+		delete this;
+#else
+			// The next best thing is leaking just the string, but not its data.
+		log_dir.clear();
+		log_dir.shrink_to_fit();
+#endif
+	}
+}
+
+static void rotate(const char *log_dir, const char *ext)
+{
+	using namespace cbl;
+	fs::mkdir(log_dir, true);
+	std::string file = path::join(log_dir, std::string("cppbuild.") + ext);
+	uint64_t stamp = fs::get_modification_timestamp(file.c_str());
+	if (stamp != 0)
+	{
+		int y, M, d, h, m, s, us;
+		time::of_day(stamp, &y, &M, &d, &h, &m, &s, &us);
+		char new_name[36];
+		std::string old_file = path::get_path_without_extension(file.c_str()) + '-';
+		uint64_t number = uint64_t(y) * 10000 + uint64_t(M) * 100 + uint64_t(d);
+		old_file += std::to_string(number) + '-';
+		number = uint64_t(h) * 10000 + uint64_t(m) * 100 + uint64_t(s);
+		old_file += std::to_string(number) + '-';
+		old_file += std::to_string(us) + '.' + ext;
+		if (!fs::move_file(file.c_str(), old_file.c_str(), fs::maintain_timestamps))
+		{
+			warning("Failed to rotate %s file %s to %s", ext, file.c_str(), old_file.c_str());
+		}
+	}
+}
+
+// Exponential back-off until the process holding the file terminates.
+static FILE *fopen_with_exponential_backoff(const char *path, const char *mode, int attempts = 10)
+{
+	FILE *result = nullptr;
+	auto duration = std::chrono::microseconds(50);
+	for (int i = 0; i < attempts; ++i)
+	{
+		result = fopen(path, mode);
+		if (result)
+		{
+			break;
+		}
+		else
+		{
+			std::this_thread::sleep_for(duration);
+			duration *= 2;
+		}
+	}
+	return result;
+}
+
+namespace cbl
+{
+	namespace detail
+	{
+		extern FILE *log_file_stream;
+		extern FILE *trace_file_stream;
+	};
+};
+
+void rotate_traces(bool append_to_current)
+{
+	using namespace cbl;
+	using namespace cbl::detail;
+
+	// Rotate the latest log file to a sortable, timestamped format.
+	std::string log_dir = path::join(path::get_cppbuild_cache_path(), "log");
+	std::string log = path::join(log_dir, "cppbuild.json");
+
+	long file_end = 0;
+	if (append_to_current)
+	{
+		// NOTE: This appending implementation depends heavily on the knowledge of minitrace's
+		// internals and Chrome trace JSON structure. We overwrite the footer of the old trace, as
+		// well as the header of the new trace, and achieve concatenation of all related
+		// invocations in the same file.
+		// If this stream were opened with "a" mode, all outputs would end up at the end of the
+		// file and seeking operations would be silently ignored. Instead, we want to retain the
+		// ability to seek. On the other hand, "r+" mode may succeed while the file is still open
+		// for writing. Therefore, we open it twice: first just to wait, second to actually use it.
+		trace_file_stream = fopen_with_exponential_backoff(log.c_str(), "ab");
+		if (trace_file_stream)
+		{
+			fclose(trace_file_stream);
+			trace_file_stream = fopen(log.c_str(), "r+b");
+			fseek(trace_file_stream, 0, SEEK_END);
+			file_end = ftell(trace_file_stream);
+		}
+	}
+	if (!trace_file_stream)
+	{
+		rotate(log_dir.c_str(), "json");
+
+		trace_file_stream = fopen(log.c_str(), "wb");
+	}
+	// Make sure that handle inheritance doesn't block log rotation in the deploying child process.
+	cbl::fs::disinherit_stream(trace_file_stream);
+
+	mtr_init_from_stream(trace_file_stream);
+	atexit(mtr_shutdown);
+
+	if (file_end != 0)
+	{
+		// Rewind past the new header and the old footer, so that new events overwrite both.
+		// NOTE: The resulting JSON would be malformed if fewer event characters were written to
+		// it than the sum of lengths of the footer and header, but thankfully, the metas below
+		// do the job just fine.
+		fseek(trace_file_stream, file_end - (int)strlen("\n]}\n"), SEEK_SET);
+		fputs(",\n", trace_file_stream);
+	}
+
+	MTR_META_PROCESS_NAME(append_to_current ? "cppbuild (restarted)" : "cppbuild");
+	MTR_META_THREAD_NAME("Main Thread");
+
+	// Also register with the scheduler callbacks.
+	auto callbacks = cbl::scheduler.GetProfilerCallbacks();
+	callbacks->threadStart = [](uint32_t thread_index)
+	{
+		MTR_META_THREAD_NAME(("Task " + std::to_string(thread_index)).c_str());
+		MTR_META_THREAD_SORT_INDEX((uintptr_t)(thread_index + 1));
+	};
+	callbacks->threadStop = nullptr;
+	callbacks->waitStart = [](uint32_t thread_index) { MTR_BEGIN("task", "wait"); };
+	callbacks->waitStop = [](uint32_t thread_index) { MTR_END("task", "wait"); };
+}
+
+void rotate_logs(bool append_to_current)
+{
+	using namespace cbl;
+	using namespace cbl::detail;
+
+	// Rotate the latest log file to a sortable, timestamped format.
+	std::string log_dir = path::join(path::get_cppbuild_cache_path(), "log");
+	std::string log = path::join(log_dir, "cppbuild.log");
+	if (append_to_current)
+	{
+		log_file_stream = fopen_with_exponential_backoff(log.c_str(), "a");
+	}
+	if (!log_file_stream)
+	{
+		rotate(log_dir.c_str(), "log");
+
+		// Open the new stream.
+		log_file_stream = fopen(log.c_str(), "w");
+	}
+	// Make sure that handle inheritance doesn't block log rotation in the deploying child process.
+	cbl::fs::disinherit_stream(log_file_stream);
+	atexit([]() { fclose(log_file_stream); });
 }
