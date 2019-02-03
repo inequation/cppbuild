@@ -249,7 +249,7 @@ namespace cppbuild
 
 	void background_delete::worker::ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum)
 	{
-		MTR_SCOPE("rotate_logs", "background_delete");
+		MTR_SCOPE(__FILE__, "Background deletion");
 		for (auto i = range.start; i < range.end; ++i)
 		{
 			if (!fs::delete_file(list[i].c_str()))
@@ -417,8 +417,8 @@ void rotate_traces(bool append_to_current)
 		MTR_META_THREAD_SORT_INDEX((uintptr_t)(thread_index + 1));
 	};
 	callbacks->threadStop = nullptr;
-	callbacks->waitStart = [](uint32_t thread_index) { MTR_BEGIN("task", "wait"); };
-	callbacks->waitStop = [](uint32_t thread_index) { MTR_END("task", "wait"); };
+	callbacks->waitStart = [](uint32_t thread_index) { MTR_BEGIN(__FILE__, "Wait"); };
+	callbacks->waitStop = [](uint32_t thread_index) { MTR_END(__FILE__, "Wait"); };
 }
 
 void rotate_logs(bool append_to_current)

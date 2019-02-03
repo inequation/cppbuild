@@ -117,7 +117,7 @@ void gcc::generate_dependency_actions_for_cpptu(
 	// Avoid JSON escape sequence issues.
 	std::string safe_source = source;
 	for (auto& c : safe_source) { if (c == '\\') c = '/'; }
-	MTR_SCOPE_S("gcc", "dependency_scan", "source", safe_source.c_str());
+	MTR_SCOPE_S(__FILE__, "Dependency scan", "source", safe_source.c_str());
 	if (0 == cbl::process::start_sync(cmdline.c_str(), append_to_buffer, append_to_buffer))
 	{
 		buffer.push_back(0);	// Ensure null termination, so that we may treat data() as C string.

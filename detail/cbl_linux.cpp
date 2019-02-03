@@ -433,7 +433,7 @@ namespace cbl
 
 	int process::wait()
 	{
-		MTR_SCOPE_I("process", "wait_for_process", "handle", (uintptr_t)handle);
+		MTR_SCOPE_I(__FILE__, "Wait for process", "handle", (uintptr_t)handle);
 
 		auto read_pipe_to_callback = [](void *pipe[2], std::vector<uint8_t> &buffer, pipe_output_callback& cb)
 		{

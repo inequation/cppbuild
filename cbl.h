@@ -242,29 +242,7 @@ namespace cbl
 	// Helper construct for parallelizing trivial for loops. Loop body is a callable with the following
 	// signature: void loop_body(uint32_t index);
 	template <typename loop_body>
-	void parallel_for(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting_to_threads = 1)
-	{
-		class loop_task : public enki::ITaskSet
-		{
-			loop_body body;
-		public:
-			loop_task(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting)
-				: enki::ITaskSet(set_size, min_size_for_splitting)
-				, body(callable)
-			{}
-
-			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-			{
-				MTR_SCOPE_C("cbl", "parallel_for", "func", typeid(body).name());
-				for (auto i = range.start; i < range.end; ++i)
-					body(i);
-			}
-		};
-		loop_task loop(callable, set_size, min_size_for_splitting_to_threads);
-		scheduler.AddTaskSetToPipe(&loop);
-		//MTR_SCOPE("cbl", "parallel_for_wait");
-		scheduler.WaitforTask(&loop);
-	}
+	void parallel_for(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting_to_threads = 1);
 
 	// Helper construct that (ab)uses RAII to run some code when going out of scope.
 	struct scoped_guard
@@ -278,6 +256,7 @@ namespace cbl
 	};
 }
 
+// Inline implementations go here.
 namespace cbl
 {
 	constexpr const char* get_default_toolchain_for_host()
@@ -317,6 +296,31 @@ else IF_ENUM_STR(linux64)
 	constexpr const char *get_host_platform_str()
 	{
 		return get_platform_str(get_host_platform());
+	}
+
+	template <typename loop_body>
+	inline void parallel_for(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting_to_threads)
+	{
+		class loop_task : public enki::ITaskSet
+		{
+			loop_body body;
+		public:
+			loop_task(loop_body callable, uint32_t set_size, uint32_t min_size_for_splitting)
+				: enki::ITaskSet(set_size, min_size_for_splitting)
+				, body(callable)
+			{}
+
+			virtual void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+			{
+				MTR_SCOPE_S(__FILE__, "Parallel for", "Function", typeid(body).name());
+				for (auto i = range.start; i < range.end; ++i)
+					body(i);
+			}
+		};
+		loop_task loop(callable, set_size, min_size_for_splitting_to_threads);
+		scheduler.AddTaskSetToPipe(&loop);
+		//MTR_SCOPE(__FILE__, "parallel_for Wait");
+		scheduler.WaitforTask(&loop);
 	}
 }
 

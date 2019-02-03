@@ -4,7 +4,7 @@
 
 void dump_builds(const target_map& t, const configuration_map& c)
 {
-	MTR_SCOPE("main", "dump_builds");
+	MTR_SCOPE_FUNC();
 	constexpr const char *types[] = { "Executable", "Static library", "Dynamic library" };
 	static_assert(sizeof(types) / sizeof(types[0]) - 1 == target_data::dynamic_library, "Missing string for target type");
 
@@ -139,7 +139,7 @@ namespace detail
 
 void dump_graph(std::shared_ptr<graph::action> root)
 {
-	MTR_SCOPE("main", "dump_graph");
+	MTR_SCOPE_FUNC();
 	detail::dump_action(root, 0);
 }
 
@@ -151,7 +151,7 @@ std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_buil
 		used_tc = cbl::get_default_toolchain_for_host();
 	}
 
-	MTR_SCOPE_S("build", "setup", "used_toolchain", used_tc);
+	MTR_SCOPE_FUNC_S("Used toolchain", used_tc);
 
 	assert(toolchains.find(used_tc) != toolchains.end() && "Unknown toolchain");
 	auto& tc = toolchains[used_tc];
@@ -230,7 +230,7 @@ namespace bootstrap
 
 	int build(toolchain_map& toolchains, int argc, const char *argv[])
 	{
-		MTR_SCOPE("bootstrap", "bootstrap_build");
+		MTR_SCOPE(__FILE__, "cppbuild bootstrapping");
 		using namespace cbl;
 
 		auto bootstrap = describe(toolchains);
@@ -259,7 +259,7 @@ namespace bootstrap
 			int exit_code = execute_build(bootstrap.first, build.first, bootstrap.second, build.second);
 			if (exit_code == 0)
 			{
-				MTR_SCOPE("bootstrap", "bootstrap_deploy_dispatch");
+				MTR_SCOPE(__FILE__, "cppbuild deployment dispatch");
 				std::string cmdline = bootstrap.first.second.output;
 				cmdline += " --bootstrap-deploy="
 					+ std::to_string(cbl::process::get_current_pid()) + ","
@@ -271,6 +271,8 @@ namespace bootstrap
 					cmdline += ' ';
 					cmdline += argv[i];
 				}
+				// Make sure the trace file is flushed so that concatenation doesn't corrupt it.
+				mtr_flush();
 				auto p = cbl::process::start_async(cmdline.c_str());
 				if (!p)
 				{
@@ -284,7 +286,7 @@ namespace bootstrap
 		}
 		else
 		{
-			MTR_SCOPE("bootstrap", "gc");
+			MTR_SCOPE(__FILE__, "Garbage collection");
 			info("cppbuild executable up to date");
 			auto old_copies = cbl::fs::enumerate_files(cbl::path::join(staging_dir, "build-*").c_str());
 #ifdef _WIN64
@@ -305,7 +307,7 @@ namespace bootstrap
 		std::string logged_params = g_options.bootstrap_deploy.val.as_str_ptr;
 		// Avoid JSON escape sequence issues.
 		for (auto& c : logged_params) { if (c == '\\') c = '/'; }
-		MTR_SCOPE_FUNC_S("deployment_params", logged_params.c_str());
+		MTR_SCOPE_FUNC_S("Deployment params", logged_params.c_str());
 
 		// Finish the bootstrap deployment:
 		assert(nullptr != g_options.bootstrap_deploy.val.as_str_ptr);
@@ -406,9 +408,9 @@ int main(int argc, char *argv[])
 	target_map targets;
 	configuration_map configs;
 
-	MTR_BEGIN("main", "describe");
+	MTR_BEGIN(__FILE__, "describe");
 	auto arguments = describe(targets, configs, toolchains);
-	MTR_END("main", "describe");
+	MTR_END(__FILE__, "describe");
 	//dump_builds(targets, configs);
 
 	// Read target and configuration info from command line.
@@ -434,7 +436,7 @@ int main(int argc, char *argv[])
 		return (int)error_code::unknown_configuration;
 	}
 
-	MTR_SCOPE_S("build", "build_target", "target", target->first.c_str());
+	MTR_SCOPE_S(__FILE__, "Building target", "target", target->first.c_str());
 	std::string desc = "Building target " + target->first + " in configuration " + cfg->first;
 	cbl::time::scoped_timer _(desc.c_str());
 	auto build = setup_build(*target, *cfg, toolchains);
