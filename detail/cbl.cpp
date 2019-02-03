@@ -12,33 +12,6 @@
 
 namespace cbl
 {
-	constexpr const char* get_default_toolchain_for_host()
-	{
-		constexpr const char *toolchain_names[] =
-		{
-			"msvc",	// win64
-			"gcc"	// linux
-		};
-		return toolchain_names[(uint8_t)get_host_platform()];
-	}
-
-	constexpr const char *get_platform_str(platform p)
-	{
-#define IF_ENUM_STR(x)	if (p == platform::x) return #x;
-		IF_ENUM_STR(win64)
-		else IF_ENUM_STR(linux64)
-		else IF_ENUM_STR(macos)
-		else IF_ENUM_STR(ps4)
-		else IF_ENUM_STR(xbox1)
-		else return (assert(!"Unknown platform"), "unknown");
-#undef IF_ENUM_STR
-	}
-
-	constexpr const char *get_host_platform_str()
-	{
-		return get_platform_str(get_host_platform());
-	}
-
 	size_t combine_hash(size_t a, size_t b)
 	{
 		return a ^ (b + 0x9e3779b9 + (a << 6) + (a >> 2));

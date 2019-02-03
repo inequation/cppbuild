@@ -171,11 +171,11 @@ namespace cbl
 		static void wait_for_pid(uint32_t pid);
 	};
 
-	extern constexpr platform get_host_platform();
-	extern constexpr const char *get_platform_str(platform);
-	extern constexpr const char *get_host_platform_str();
+	constexpr platform get_host_platform();
+	constexpr const char *get_platform_str(platform);
+	constexpr const char *get_host_platform_str();
 
-	extern constexpr const char *get_default_toolchain_for_host();
+	constexpr const char *get_default_toolchain_for_host();
 
 	size_t combine_hash(size_t a, size_t b);
 
@@ -276,6 +276,48 @@ namespace cbl
 		scoped_guard operator=(const scoped_guard &) = delete;
 		callable stored;
 	};
+}
+
+namespace cbl
+{
+	constexpr const char* get_default_toolchain_for_host()
+	{
+		constexpr const char *toolchain_names[] =
+		{
+			"msvc",	// win64
+			"gcc"	// linux
+		};
+		return toolchain_names[(uint8_t)get_host_platform()];
+	}
+
+	constexpr const char *get_platform_str(platform p)
+	{
+#define IF_ENUM_STR(x)	if (p == platform::x) return #x;
+		IF_ENUM_STR(win64)
+else IF_ENUM_STR(linux64)
+		else IF_ENUM_STR(macos)
+		else IF_ENUM_STR(ps4)
+		else IF_ENUM_STR(xbox1)
+		else return (assert(!"Unknown platform"), "unknown");
+#undef IF_ENUM_STR
+	}
+
+	constexpr platform get_host_platform()
+	{
+		return platform::
+#if defined(_WIN64)
+			win64
+#elif defined(__linux__)
+			linux64
+#else
+			#error Unsupported platform
+#endif
+			;
+	}
+	constexpr const char *get_host_platform_str()
+	{
+		return get_platform_str(get_host_platform());
+	}
 }
 
 namespace std

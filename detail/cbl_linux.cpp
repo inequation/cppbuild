@@ -5,6 +5,7 @@
 #if defined(__linux__)
 
 #include "../cppbuild.h"
+#include "../cbl.h"
 
 #include <fcntl.h>
 #include <glob.h>
@@ -23,11 +24,6 @@
 
 namespace cbl
 {
-	constexpr platform get_host_platform()
-	{
-		return platform::linux64;
-	}
-
 	namespace path
 	{
 		bool is_path_separator(char c) { return c == '/'; }

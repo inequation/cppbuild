@@ -14,11 +14,6 @@
 
 namespace cbl
 {
-	constexpr platform get_host_platform()
-	{
-		return platform::win64;
-	}
-
 	namespace path
 	{
 		bool is_path_separator(char c)
