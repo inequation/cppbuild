@@ -43,17 +43,7 @@ struct version
 	std::string to_string() const;
 };
 
-#define CPPBUILD_STRINGIFY(x)	CPPBUILD_STRINGIFY2(x)
-#define CPPBUILD_STRINGIFY2(x)	#x
-constexpr version cppbuild_version = { 0, 0, 0, 0,
-#if CPPBUILD_GENERATION
-	"gen" CPPBUILD_STRINGIFY(CPPBUILD_GENERATION)
-#else
-	"gen1"
-#endif
-};
-#undef CPPBUILD_STRINGIFY2
-#undef CPPBUILD_STRINGIFY
+extern const version cppbuild_version;
 
 struct configuration_data
 {
@@ -108,6 +98,8 @@ struct target_data
 };
 typedef std::unordered_map<std::string, target_data> target_map;
 typedef std::pair<std::string, target_data> target;
+
+//=============================================================================
 
 struct toolchain
 {
@@ -194,7 +186,12 @@ namespace graph
 	void clean_build_graph_outputs(std::shared_ptr<action> root);
 };
 
-void discover_toolchains(toolchain_map& toolchains);
+//=============================================================================
+
+// Parses the given argument string vector as command line options. allows overriding defaults from describe().
+// argv[0] is also parsed as an option. Non-option arguments (i.e. not starting with '-', and not arguments
+// to such options) are ignored.
+extern void override_options(const string_vector &args);
 
 //=============================================================================
 

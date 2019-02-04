@@ -29,6 +29,8 @@ namespace cppbuild
 			int32_t as_int32;
 			const char *as_str_ptr;
 			bool as_bool;
+
+			bool operator==(const value &other) { return as_int64 == other.as_int64; }
 		};
 
 		// Constant "description" part.
@@ -108,9 +110,11 @@ namespace cppbuild
 };
 
 extern cppbuild::options g_options;
-extern int parse_args(int &argc, char **&argv);
+extern int parse_args(int argc, const char **argv);
 extern void print_version();
 extern void print_usage(const char *argv0);
+
+extern void discover_toolchains(toolchain_map& toolchains);
 
 extern void rotate_traces(bool append_to_current);
 extern void rotate_logs(bool append_to_current);

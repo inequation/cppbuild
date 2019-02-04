@@ -3,6 +3,12 @@
 #include "detail.h"
 
 #if !defined(_GNU_SOURCE) && !defined(_BSD_SOURCE)
+	#define CPPBUILD_BSD_GETOPT 1
+#else
+	#define CPPBUILD_BSD_GETOPT	0
+#endif
+
+#if CPPBUILD_BSD_GETOPT
 	#include "getopt/getopt.h"
 #else
 	#include <unistd.h>
@@ -57,9 +63,23 @@ std::string version::to_string() const
 	return str;
 }
 
+#define CPPBUILD_STRINGIFY(x)	CPPBUILD_STRINGIFY2(x)
+#define CPPBUILD_STRINGIFY2(x)	#x
+const version cppbuild_version = { 0, 0, 0, 0,
+#if CPPBUILD_GENERATION
+	"gen" CPPBUILD_STRINGIFY(CPPBUILD_GENERATION)
+#else
+	"gen1"
+#endif
+};
+#undef CPPBUILD_STRINGIFY2
+#undef CPPBUILD_STRINGIFY
+
 void print_version()
 {
-	cbl::info("cppbuild version %s (" __DATE__ ", " __TIME__ ")", cppbuild_version.to_string().c_str());
+	cbl::info("cppbuild version %s %s (" __DATE__ ", " __TIME__ ")",
+		cppbuild_version.to_string().c_str(),
+		cbl::get_host_platform_str());
 }
 
 cppbuild::options g_options;
@@ -100,7 +120,7 @@ const struct option *get_long_options()
 				else
 					long_options[index].has_arg = no_argument;
 				long_options[index].flag = nullptr;
-				long_options[index].val = -int(2 + &opt - g_options.begin());
+				long_options[index].val = 0;
 				++index;
 			}
 		}
@@ -154,10 +174,9 @@ void print_usage(const char *argv0)
 	}
 }
 
-int parse_args(int &argc, char **&argv)
+static int internal_parse_args(int argc, const char **argv, bool ignore_non_defaults)
 {
 	int c;
-	int digit_optind = 0;
 
 	const auto *optstring = get_optstring().c_str();
 	const auto *long_options = get_long_options();
@@ -167,23 +186,18 @@ int parse_args(int &argc, char **&argv)
 
 	while (true)
 	{
-		int this_option_optind = optind ? optind : 1;
 		int option_index = 0;
 
-		c = getopt_long(argc, argv, optstring, long_options, &option_index);
+		c = getopt_long(argc, const_cast<char **>(argv), optstring, long_options, &option_index);
 
 		if (c == -1)
 			break;
 		else if (c == '?')
-		{
-			cbl::error("Unknown option '%s'.", argv[optind - 1]);
-			print_usage(argv[0]);
-			exit(1);
-		}
+			return -1;
 
 		cppbuild::option *opt = nullptr;
-		if (c < -1)
-			opt = &g_options[-c - 2];
+		if (c == 0)
+			opt = &g_options[option_index];
 		else
 		{
 			for (auto &o : g_options)
@@ -198,44 +212,74 @@ int parse_args(int &argc, char **&argv)
 
 		assert(opt);
 
-		using namespace cppbuild;
-
-		switch (opt->arg)
+		if (!ignore_non_defaults || opt->val == opt->default_val)
 		{
-		case cppbuild::option::arg_none:
-			assert(opt->type == cppbuild::option::boolean);
-			opt->val.as_bool = !opt->default_val.as_bool;
-			break;
-		case cppbuild::option::arg_optional:
-			if (!optarg)
+			switch (opt->arg)
 			{
-				opt->val = opt->default_val;
+			case cppbuild::option::arg_none:
+				assert(opt->type == cppbuild::option::boolean);
+				opt->val.as_bool = !opt->default_val.as_bool;
 				break;
+			case cppbuild::option::arg_optional:
+				if (!optarg)
+				{
+					opt->val = opt->default_val;
+					break;
+				}
+				// Intentional fall-through.
+			case cppbuild::option::arg_required:
+				assert(optarg);
+				switch (opt->type)
+				{
+				case cppbuild::option::boolean:
+					opt->val.as_bool = !!atoi(optarg);
+					break;
+				case cppbuild::option::int32:
+					opt->val.as_int32 = atoi(optarg);
+					break;
+				case cppbuild::option::int64:
+					opt->val.as_int64 = strtoll(optarg, nullptr, 0);
+					break;
+				case cppbuild::option::str_ptr:
+					opt->val.as_str_ptr = optarg;
+					break;
+				}
+				break;
+			default: assert(!"Unsupported argument setting");
 			}
-			// Intentional fall-through.
-		case cppbuild::option::arg_required:
-			assert(optarg);
-			switch (opt->type)
-			{
-			case cppbuild::option::boolean:
-				opt->val.as_bool = !!atoi(optarg);
-				break;
-			case cppbuild::option::int32:
-				opt->val.as_int32 = atoi(optarg);
-				break;
-			case cppbuild::option::int64:
-				opt->val.as_int64 = strtoll(optarg, nullptr, 0);
-				break;
-			case cppbuild::option::str_ptr:
-				opt->val.as_str_ptr = optarg;
-				break;
-			}
-			break;
-		default: assert(!"Unsupported argument setting");
 		}
 	}
 
 	return optind;
+}
+
+int parse_args(int argc, const char **argv)
+{
+	int first_non_opt_arg = internal_parse_args(argc, argv, false);
+	if (first_non_opt_arg < 0)
+	{
+		cbl::error("Unknown option '%s'.", argv[optind - 1]);
+		print_usage(argv[0]);
+		exit(1);
+	}
+	return first_non_opt_arg;
+}
+
+void override_options(const string_vector &args)
+{
+#if CPPBUILD_BSD_GETOPT
+	optreset = 1;
+#endif
+	optind = 0;
+
+	auto *argv = new const char *[args.size()];
+	auto *p = argv;
+	for (auto &a : args)
+		*(p++) = a.c_str();
+	
+	internal_parse_args(args.size(), argv, true);
+
+	delete [] argv;
 }
 
 namespace cppbuild

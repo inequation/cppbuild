@@ -363,7 +363,7 @@ namespace bootstrap
 
 int main(int argc, char *argv[])
 {
-	int first_non_opt_arg = parse_args(argc, argv);
+	int first_non_opt_arg = parse_args(argc, const_cast<const char **>(argv));
 
 	if (g_options.version.val.as_bool)
 	{
