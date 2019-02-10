@@ -302,7 +302,7 @@ parse_long_options(char * const *nargv, const char *options,
 		if (long_options[match].has_arg == required_argument ||
 		    long_options[match].has_arg == optional_argument) {
 			if (has_equal)
-				optarg = has_equal;
+				optarg = (char *)has_equal;
 			else if (long_options[match].has_arg ==
 			    required_argument) {
 				/*
@@ -553,7 +553,7 @@ start:
 	} else {				/* takes (optional) argument */
 		optarg = NULL;
 		if (*place)			/* no white space */
-			optarg = place;
+			optarg = (char *)place;
 		else if (oli[1] != ':') {	/* arg not optional */
 			if (++optind >= nargc) {	/* no arg */
 				place = EMSG;
