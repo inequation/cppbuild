@@ -9,13 +9,8 @@ namespace cbl
 {
 	namespace path
 	{
-#if defined(_WIN64)
-		constexpr const char get_path_separator() { return '\\'; }
-		constexpr const char get_alt_path_separator() { return '/'; }
-#else
-		constexpr const char get_path_separator() { return '/'; }
-		constexpr const char get_alt_path_separator() { return get_path_separator(); }
-#endif
+		constexpr const char get_path_separator();
+		constexpr const char get_alt_path_separator();
 		bool is_path_separator(char c);
 
 		std::string get_extension(const char *path);
@@ -273,7 +268,7 @@ namespace cbl
 	{
 #define IF_ENUM_STR(x)	if (p == platform::x) return #x;
 		IF_ENUM_STR(win64)
-else IF_ENUM_STR(linux64)
+		else IF_ENUM_STR(linux64)
 		else IF_ENUM_STR(macos)
 		else IF_ENUM_STR(ps4)
 		else IF_ENUM_STR(xbox1)
@@ -281,18 +276,6 @@ else IF_ENUM_STR(linux64)
 #undef IF_ENUM_STR
 	}
 
-	constexpr platform get_host_platform()
-	{
-		return platform::
-#if defined(_WIN64)
-			win64
-#elif defined(__linux__)
-			linux64
-#else
-			#error Unsupported platform
-#endif
-			;
-	}
 	constexpr const char *get_host_platform_str()
 	{
 		return get_platform_str(get_host_platform());
@@ -337,6 +320,11 @@ namespace std
 	};
 }
 
-#if _WIN64
+#if defined(_WIN64)
 	#include "cbl_win64.h"
+	#include "cbl_win64.inl"
+#elif defined(__linux__)
+	#include "cbl_linux64.inl"
+#else
+	#error Unsupported platform
 #endif
