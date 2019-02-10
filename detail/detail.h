@@ -65,7 +65,7 @@ namespace cppbuild
 		option version =
 			{ option::boolean,	'v',"version",		{ false },		"Print version number and exit." };
 		option log_level =
-			{ option::int32,	'l',"log-level",	{ int32_t(/*cbl::severity::info*/2) },	"Set logging verbosity level. Lower level is more verbose." };
+			{ option::int32,	'l',"log-level",	{ int32_t(/*cbl::severity::info*/2) },	"Set logging verbosity level. Lower level is more verbose.", option::arg_required };
 		option jobs =
 			{ option::int32,	'j',"jobs",			{ int32_t(0) },	"Allow N jobs at once; N is hardware thread count by default.", option::arg_optional };
 
