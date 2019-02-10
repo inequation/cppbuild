@@ -213,8 +213,8 @@ namespace bootstrap
 		cfg.second.additional_include_directories.push_back("cppbuild");
 		cfg.second.definitions.push_back(std::make_pair("CPPBUILD_GENERATION", std::to_string(CPPBUILD_GENERATION == 0 ? 2 : (CPPBUILD_GENERATION + 1))));
 		cfg.second.definitions.push_back(std::make_pair("MTR_ENABLED", "1"));
-		cfg.second.additional_toolchain_options["msvc link"] = cbl::vwrap("/SUBSYSTEM:CONSOLE");
-		cfg.second.additional_toolchain_options["gcc link"] = cbl::vwrap("-pthread");
+		cfg.second.additional_toolchain_options["msvc link"] = string_vector{ "/SUBSYSTEM:CONSOLE" };
+		cfg.second.additional_toolchain_options["gcc link"] = string_vector{ "-pthread" };
 
 		return std::make_pair(
 			std::make_pair(cppbuild, target),

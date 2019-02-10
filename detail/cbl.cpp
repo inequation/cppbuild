@@ -196,16 +196,9 @@ namespace cbl
 		}
 	};
 
-	string_vector vwrap(const std::string& s)
-	{
-		string_vector v;
-		v.emplace_back(s);
-		return v;
-	}
-
 	std::function<string_vector()> fvwrap(const std::string& s)
 	{
-		return [s]() { return vwrap(s); };
+		return [s]() { return string_vector{ s }; };
 	}
 
 	void trim(std::string& s)

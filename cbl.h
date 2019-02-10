@@ -195,8 +195,6 @@ namespace cbl
 	// Alias for log<debug>(...).
 	void log_debug(const char* fmt, ...);
 
-	// Wraps a single string in a vector.
-	string_vector vwrap(const std::string& s);
 	// Wraps a string vector in a callable functor.
 	std::function<string_vector()> fvwrap(const std::string& s);
 
