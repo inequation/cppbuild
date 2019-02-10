@@ -2,18 +2,9 @@
 #include "../cbl.h"
 #include "detail.h"
 
-#if !defined(_GNU_SOURCE) && !defined(_BSD_SOURCE)
-	#define CPPBUILD_BSD_GETOPT 1
-#else
-	#define CPPBUILD_BSD_GETOPT	0
-#endif
-
-#if CPPBUILD_BSD_GETOPT
-	#include "getopt/getopt.h"
-#else
-	#include <unistd.h>
-	#include <getopt.h>
-#endif
+// We always use our bundled FreeBSD implementation, because some getopt_long() implementations lie about
+// support for optional arguments to short options (looking at you, Debian!).
+#include "getopt/getopt.h"
 
 #include <chrono>
 #include <thread>
@@ -92,11 +83,13 @@ const std::string &get_optstring()
 		for (const auto &op : g_options)
 		{
 			if (op.short_opt)
+			{
 				optstring += op.short_opt;
-			if (op.arg == cppbuild::option::arg_required)
-				optstring += ':';
-			else if (op.arg == cppbuild::option::arg_optional)
-				optstring += "::";
+				if (op.arg == cppbuild::option::arg_required)
+					optstring += ':';
+				else if (op.arg == cppbuild::option::arg_optional)
+					optstring += "::";
+			}
 		}
 	}
 	return optstring;
@@ -133,6 +126,7 @@ void print_usage(const char *argv0)
 	print_version();
 	using namespace cbl;
 	info("Usage: %s [options] [target] [configuration]", argv0);
+	info("Options:");
 	std::string opt_str;
 	const char *arg;
 	for (const auto &opt : g_options)
@@ -194,6 +188,12 @@ static int internal_parse_args(int argc, const char **argv, bool ignore_non_defa
 			break;
 		else if (c == '?')
 			return -1;
+		else if (c == ':')
+		{
+			// The user messed up, show usage message.
+			g_options.help.val.as_bool = true;
+			return optind;
+		}
 
 		cppbuild::option *opt = nullptr;
 		if (c == 0)
@@ -223,7 +223,24 @@ static int internal_parse_args(int argc, const char **argv, bool ignore_non_defa
 			case cppbuild::option::arg_optional:
 				if (!optarg)
 				{
-					opt->val = opt->default_val;
+					switch (opt->type)
+					{
+					case cppbuild::option::boolean:
+						opt->val.as_bool = !opt->default_val.as_bool;
+						break;
+					case cppbuild::option::int32:
+						// TODO: Perhaps another "default value for optional arg" is called for?
+						opt->val.as_int32 = !opt->default_val.as_int32;
+						break;
+					case cppbuild::option::int64:
+						// TODO: Perhaps another "default value for optional arg" is called for?
+						opt->val.as_int64 = !opt->default_val.as_int64;
+						break;
+					case cppbuild::option::str_ptr:
+						// Huh?
+						assert(!"String options cannot have optional arguments");
+						break;
+					}
 					break;
 				}
 				// Intentional fall-through.
@@ -272,12 +289,13 @@ void override_options(const string_vector &args)
 #endif
 	optind = 0;
 
-	auto *argv = new const char *[args.size()];
+	auto *argv = new const char *[1 + args.size()];
 	auto *p = argv;
+	*(p++) = "build";
 	for (auto &a : args)
 		*(p++) = a.c_str();
 	
-	internal_parse_args(args.size(), argv, true);
+	internal_parse_args(1 + args.size(), argv, true);
 
 	delete [] argv;
 }

@@ -380,7 +380,7 @@ namespace cbl
 	{
 		va_list va;
 		va_start(va, fmt);
-		detail::log<s>( fmt, va);
+		detail::log<s>(fmt, va);
 		va_end(va);
 	}
 
