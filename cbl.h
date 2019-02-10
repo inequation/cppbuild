@@ -322,9 +322,9 @@ namespace std
 
 #if defined(_WIN64)
 	#include "cbl_win64.h"
-	#include "cbl_win64.inl"
+	#include "detail/cbl_win64.inl"
 #elif defined(__linux__)
-	#include "cbl_linux64.inl"
+	#include "detail/cbl_linux64.inl"
 #else
 	#error Unsupported platform
 #endif
