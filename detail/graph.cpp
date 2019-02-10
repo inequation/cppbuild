@@ -285,7 +285,7 @@ namespace graph
 		public:
 			compile_task(build_context& context, std::shared_ptr<action> root)
 				: build_task(context, root,
-					context.tc->invoke_compiler(
+					context.tc->schedule_compiler(
 						context.target,
 						root->outputs[0],
 						root->inputs[0]->outputs[0],
@@ -321,7 +321,7 @@ namespace graph
 					assert(i->type == (action::action_type)cpp_action::compile);
 					inputs.insert(inputs.begin(), i->outputs.begin(), i->outputs.end());
 				}
-				process = ctx.tc->invoke_linker(
+				process = ctx.tc->schedule_linker(
 					ctx.target,
 					inputs,
 					ctx.cfg, ctx.on_stderr, ctx.on_stdout);
@@ -386,8 +386,11 @@ namespace graph
 		// Presize the array for safe parallel writes to it.
 		root->inputs.resize(sources.size());
 		cbl::parallel_for([&](uint32_t i)
-			{ root->inputs[i] = tc->generate_compile_action_for_cpptu(target, sources[i], cfg); },
-			sources.size(), 100);
+			{
+				MTR_SCOPE_S(__FILE__, "Generating compile action", "source", sources[i].c_str());
+				root->inputs[i] = tc->generate_compile_action_for_cpptu(target, sources[i], cfg);
+			},
+			sources.size());
 		return std::static_pointer_cast<action, cpp_action>(root);
 	}
 	

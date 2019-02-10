@@ -68,7 +68,7 @@ bool msvc::initialize()
 	return true;
 }
 
-cbl::deferred_process msvc::invoke_compiler(
+cbl::deferred_process msvc::schedule_compiler(
 	const target& target,
 	const std::string& object,
 	const std::string& source,
@@ -81,7 +81,7 @@ cbl::deferred_process msvc::invoke_compiler(
 	return cbl::process::start_deferred(cmdline.c_str(), on_stderr, on_stdout);
 }
 
-cbl::deferred_process msvc::invoke_linker(
+cbl::deferred_process msvc::schedule_linker(
 	const target& target,
 	const string_vector& source_paths,
 	const configuration& cfg,
@@ -192,10 +192,9 @@ void msvc::generate_dependency_actions_for_cpptu(
 		graph::insert_dependency_cache(target, cfg, source, deps);
 	}
 	else
-	{
-		// FIXME: Find a way to report this.
-		cbl::error("Dependency generation for %s failed with code %d", source.c_str(), exit_code);
-	}
+		// FIXME: Find a proper way to report this and stop the build.
+		cbl::error("%s: Dependency scan failed with code %d%s%s", source, exit_code,
+			buffer.empty() ? "" : ", message:\n", buffer.empty() ? "" : (const char *)buffer.data());
 }
 
 std::shared_ptr<graph::action> msvc::generate_compile_action_for_cpptu(

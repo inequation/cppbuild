@@ -15,7 +15,7 @@ struct gcc : public toolchain
 
 	bool initialize() override;
 
-	cbl::deferred_process invoke_compiler(
+	cbl::deferred_process schedule_compiler(
 		const target& target,
 		const std::string& object,
 		const std::string& source,
@@ -23,7 +23,7 @@ struct gcc : public toolchain
 		const cbl::pipe_output_callback& on_stderr,
 		const cbl::pipe_output_callback& on_stdout) override;
 
-	cbl::deferred_process invoke_linker(
+	cbl::deferred_process schedule_linker(
 		const target& target,
 		const string_vector& source_paths,
 		const configuration& cfg,

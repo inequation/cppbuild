@@ -104,14 +104,14 @@ typedef std::pair<std::string, target_data> target;
 struct toolchain
 {
 	virtual bool initialize() = 0;
-	virtual cbl::deferred_process invoke_compiler(
+	virtual cbl::deferred_process schedule_compiler(
 		const target& target,
 		const std::string& object_path,
 		const std::string& source_path,
 		const configuration&,
 		const cbl::pipe_output_callback& on_stderr,
 		const cbl::pipe_output_callback& on_stdout) = 0;
-	virtual cbl::deferred_process invoke_linker(
+	virtual cbl::deferred_process schedule_linker(
 		const target& target,
 		const string_vector& source_paths,
 		const configuration&,

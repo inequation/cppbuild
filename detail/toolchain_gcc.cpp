@@ -31,7 +31,7 @@ bool gcc::initialize()
 	return true;
 }
 
-cbl::deferred_process gcc::invoke_compiler(
+cbl::deferred_process gcc::schedule_compiler(
 	const target& target,
 	const std::string& object,
 	const std::string& source,
@@ -44,7 +44,7 @@ cbl::deferred_process gcc::invoke_compiler(
 	return cbl::process::start_deferred(cmdline.c_str(), on_stderr, on_stdout);
 }
 
-cbl::deferred_process gcc::invoke_linker(
+cbl::deferred_process gcc::schedule_linker(
 	const target& target,
 	const string_vector& source_paths,
 	const configuration& cfg,
@@ -118,7 +118,8 @@ void gcc::generate_dependency_actions_for_cpptu(
 	std::string safe_source = source;
 	for (auto& c : safe_source) { if (c == '\\') c = '/'; }
 	MTR_SCOPE_S(__FILE__, "Dependency scan", "source", safe_source.c_str());
-	if (0 == cbl::process::start_sync(cmdline.c_str(), append_to_buffer, append_to_buffer))
+	int exit_code = cbl::process::start_sync(cmdline.c_str(), append_to_buffer, append_to_buffer);
+	if (exit_code == 0)
 	{
 		buffer.push_back(0);	// Ensure null termination, so that we may treat data() as C string.
 		const char *s = strchr((char *)buffer.data(), ':');
@@ -165,6 +166,10 @@ void gcc::generate_dependency_actions_for_cpptu(
 		}
 		graph::insert_dependency_cache(target, cfg, source, deps);
 	}
+	else
+		// FIXME: Find a proper way to report this and stop the build.
+		cbl::error("%s: Dependency scan failed with code %d%s%s", source, exit_code,
+			buffer.empty() ? "" : ", message:\n", buffer.empty() ? "" : (const char *)buffer.data());
 }
 
 std::shared_ptr<graph::action> gcc::generate_compile_action_for_cpptu(
