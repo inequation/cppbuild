@@ -2,83 +2,81 @@
 #include "../cbl.h"
 #include "detail.h"
 
+#include <sstream>
+
 void dump_builds(const target_map& t, const configuration_map& c)
 {
 	MTR_SCOPE_FUNC();
 	constexpr const char *types[] = { "Executable", "Static library", "Dynamic library" };
 	static_assert(sizeof(types) / sizeof(types[0]) - 1 == target_data::dynamic_library, "Missing string for target type");
 
-	printf("Targets:\n");
+	std::ostringstream dump;
+	dump << "Targets:\n";
 	for (auto target : t)
 	{
-		printf("\t%s %s:\t\n"
-			"\t{\n",
-			types[target.second.type],
-			target.first.c_str());
+		dump << "\t" << types[target.second.type] << ' ' << target.first << ":\t\n"
+			"\t{\n";
 		auto sources = target.second.sources();
 		for (auto source : sources)
 		{
-			printf("\t\t%s\n", source.c_str());
+			dump << "\t\t" << source << "\n";
 		}
-		printf("\t}\n");
+		dump << "\t}\n";
 	}
 
 	constexpr const char *platforms[] = { "Windows 64-bit", "Linux 64-bit", "macOS", "PS4", "Xbox One" };
 	constexpr const char *booleans[] = { "false", "true" };
 	static_assert(sizeof(platforms) / sizeof(platforms[0]) - 1 == (size_t)platform::xbox1, "Missing string for platform");
 	
-	printf("Available configurations:\n");
+	dump << "Available configurations:\n";
 	for (auto cfg : c)
 	{
-		printf("\t%s:\t\n"
-			"\t{\n",
-			cfg.first.c_str());
-		printf("\t\tPlatform: %s\n"
-			"\t\tEmit debug information: %s\n"
-			"\t\tOptimization level: O%s\n"
+		dump << "\t" << cfg.first << ":\t\n"
+			"\t{\n";
+		char opt_level = cfg.second.optimize == configuration_data::Os ? 's' : ('0' + (char)cfg.second.optimize);
+		dump << "\t\tPlatform: " << platforms[(int)cfg.second.platform] << "\n"
+			"\t\tEmit debug information: " << booleans[cfg.second.emit_debug_information] << "\n"
+			"\t\tOptimization level: O" << opt_level << "\n"
 			"\t\tDefinitions:\n"
-			"\t\t{\n",
-			platforms[(int)cfg.second.platform],
-			booleans[cfg.second.emit_debug_information],
-			cfg.second.optimize == configuration_data::Os ? "s" : std::to_string((int)cfg.second.optimize).c_str());
+			"\t\t{\n";
 		for (auto& d : cfg.second.definitions)
 		{
-			printf("\t\t\t%s%s%s\n",
-				d.first.c_str(),
-				d.second.empty() ? "" : "=",
-				d.second.empty() ? "" : d.second.c_str());
+			dump << "\t\t\t" << d.first;
+			if (!d.second.empty())
+				dump << '=' << d.second;
+			dump << '\n';
 		}
-		printf("\t\t}\n"
+		dump << "\t\t}\n"
 			"\t\tAdditional include directories:\n"
-			"\t\t{\n");
+			"\t\t{\n";
 		for (auto& i : cfg.second.additional_include_directories)
 		{
-			printf("\t\t\t%s\n", i.c_str());
+			dump << "\t\t\t" << i << '\n';
 		}
-		printf("\t\t}\n"
+		dump << "\t\t}\n"
 			"\t\tAdditional toolchain options:\n"
-			"\t\t{\n");
+			"\t\t{\n";
 		for (auto& t : cfg.second.additional_toolchain_options)
 		{
-			printf("\t\t\t\"%s\" =\n"
-				"\t\t\t{",
-				t.first.c_str());
+			dump << "\t\t\t\"" << t.first << "\" =\n"
+				"\t\t\t{";
 			for (auto& o : t.second)
 			{
-				printf("\t\t\t\t\"%s\"\n", o.c_str());
+				dump << "\t\t\t\t\"" << o << "\"\n";
 			}
 		}
-		printf("\t\t}\n"
-			"\t}\n");
+		dump << "\t\t}\n"
+			"\t}\n";
 	}
+
+	cbl::info("Dumping described builds:\n%s", dump.str().c_str());
 }
 
 namespace detail
 {
-	void dump_action(std::shared_ptr<graph::action> action, size_t indent)
+	void dump_action(std::ostringstream &dump, std::shared_ptr<graph::action> action, size_t indent)
 	{
 		constexpr char tab = ' ';//'\t';
-		constexpr char tab_s[2] = { tab, 0 };
 		std::string tabs;
 		for (size_t i = 0; i < indent; ++i)
 		{
@@ -87,8 +85,7 @@ namespace detail
 
 		if (!action)
 		{
-			printf("%sEmpty graph (up to date)\n",
-				tabs.c_str());
+			dump << tabs << "Empty graph (up to date)";
 			return;
 		}
 
@@ -101,46 +98,36 @@ namespace detail
 			"Generate"
 		};
 		static_assert(sizeof(types) / sizeof(types[0]) == graph::action::cpp_actions_end, "Missing string for action type");
-		printf("%s%s\n"
-			"%s{\n",
-			tabs.c_str(), types[action->type],
-			tabs.c_str());
+		dump << tabs << types[action->type] << '\n';
+		dump << tabs << "{\n";
+		tabs += tab;
 		if (!action->outputs.empty())
 		{
-			printf("%s%cOutputs:\n"
-				"%s%c{\n",
-				tabs.c_str(), tab,
-				tabs.c_str(), tab);
+			dump << tabs << "Outputs:\n";
+			dump << tabs << "{\n";
 			for (const auto& s : action->outputs)
-			{
-				printf("%s%c%c%s\n",
-					tabs.c_str(), tab, tab, s.c_str());
-			}
-			printf("%s%c}\n",
-				tabs.c_str(), tab);
+				dump << tabs << tab << s << '\n';
+			dump << tabs << "}\n";
 		}
 		if (!action->inputs.empty())
 		{
-			printf("%s%cInputs:\n"
-				"%s%c{\n",
-				tabs.c_str(), tab,
-				tabs.c_str(), tab);
+			dump << tabs << "Inputs:\n";
+			dump << tabs << "{\n";
 			for (const auto& i : action->inputs)
-			{
-				dump_action(i, indent + 2);
-			}
-			printf("%s%c}\n",
-				tabs.c_str(), tab);
+				dump_action(dump, i, indent + 2);
+			dump << tabs << "}\n";
 		}
-		printf("%s}\n",
-			tabs.c_str());
+		tabs.pop_back();
+		dump << tabs << "}\n";
 	}
 };
 
 void dump_graph(std::shared_ptr<graph::action> root)
 {
 	MTR_SCOPE_FUNC();
-	detail::dump_action(root, 0);
+	std::ostringstream dump;
+	detail::dump_action(dump, root, 0);
+	cbl::info("Dumping build graph:\n%s", dump.str().c_str());
 }
 
 std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_build(const target& target, const configuration& cfg, toolchain_map& toolchains, std::shared_ptr<toolchain> *out_tc = nullptr)
@@ -165,12 +152,19 @@ std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_buil
 void cull_build(std::shared_ptr<graph::action>& root)
 {
 	// TODO: Also compare toolchain invocations, as they may easily change the output.
-	/*cbl::info("Build graph before culling:");
-	dump_graph(std::static_pointer_cast<graph::cpp_action>(root));*/
+	if (g_options.dump_graph.val.as_int32 > 1)
+	{
+		cbl::info("Before culling:");
+		dump_graph(std::static_pointer_cast<graph::cpp_action>(root));
+	}
 
 	graph::cull_build_graph(root);
-	/*cbl::info("Build graph after culling:");
-	dump_graph(std::static_pointer_cast<graph::cpp_action>(root));*/
+
+	if (g_options.dump_graph.val.as_int32 > 0)
+	{
+		cbl::info("After culling:");
+		dump_graph(std::static_pointer_cast<graph::cpp_action>(root));
+	}
 
 	graph::save_timestamp_caches();
 }
@@ -411,7 +405,9 @@ int main(int argc, char *argv[])
 	MTR_BEGIN(__FILE__, "describe");
 	auto arguments = describe(targets, configs, toolchains);
 	MTR_END(__FILE__, "describe");
-	//dump_builds(targets, configs);
+
+	if (g_options.dump_builds.val.as_bool)
+		dump_builds(targets, configs);
 
 	// Read target and configuration info from command line.
 	if (first_non_opt_arg < argc)
