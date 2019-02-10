@@ -204,10 +204,10 @@ namespace bootstrap
 		{
 			auto detail_path = path::join("cppbuild", "detail");
 			auto sources = fs::enumerate_files(path::join(detail_path, "*.cpp").c_str());
-			sources.emplace_back(path::join(detail_path, path::join("enkiTS", path::join("src", "TaskScheduler.cpp"))));
-			sources.emplace_back(path::join(detail_path, path::join("minitrace", "minitrace.c")));
-			sources.emplace_back(path::join(detail_path, path::join("getopt", "getopt.c")));
-			sources.emplace_back(path::join(detail_path, path::join("getopt", "getopt_long.c")));
+			sources.emplace_back(path::join(detail_path, "enkiTS", "src", "TaskScheduler.cpp"));
+			sources.emplace_back(path::join(detail_path, "minitrace", "minitrace.c"));
+			sources.emplace_back(path::join(detail_path, "getopt", "getopt.c"));
+			sources.emplace_back(path::join(detail_path, "getopt", "getopt_long.c"));
 			sources.emplace_back("build.cpp");
 			return sources;
 		};
