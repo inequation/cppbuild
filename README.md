@@ -4,23 +4,23 @@ A toy self-hosting build system for C++, written in C++11.
 
 Inspired in equal parts by the frustration with existing C++ build systems, as well as conversations with colleagues at work.
 
-# Rationale
+I don't expect anyone to take "frustration with the build system" as valid justification at face value for developing Yet Another One, so I've written a little bit about that [in the project's wiki](https://github.com/inequation/cppbuild/wiki/Rationale).
 
-"Frustration with the build system" is not valid justification for developing Yet Another One, by my book. So why am I writing one?
+# Features
 
-1. **Portability.** I wanted something that would work with any IDE on any platform that I'm hosting the toolchain on. I usually make do with makefiles (pardon the pun), but compatibility between *GNU make* and Microsoft's *NMAKE* really limit your options to the bare basics.
-2. **Same language as the codebase.** CMake's syntax, for instance, I find repulsive. *ANT* and *NANT* require Java and C# skills to maintain, respectively, drawing a fine line between the codebase substance and the build process meta. With *cppbuild*, when working on a C++ codebase, your skills would be directly transferable to the build system, and the entire force of expression of C++ is at your disposal to customise your build.
-3. **Mature and extensive tooling.** Attach your favourite debugger and inspect WTF is going on with the compiler flags to your heart's content.
-4. **Generated code as a first class citizen.** Not as a convoluted, heavily constrained pre-build step that emits a script in a third language, that is then executed in series, that has ordering issues... Have the build graph support the idea from the get go instead.
-5. **Fun.** Programmer excuse #1. There are some pretty cool (parallel) graph processing opportunities here that I'm looking forward to.
+1. **Same language** as your actual codebase.
+2. C++'s **portability, power of expression** and **debuggability**.
+3. [**Self-hosting**](https://github.com/inequation/cppbuild#self-hosting) with **trivial bootstrapping**. Subsequent self-rebuilds are seamless and automatic.
+4. **Perfect dependency tracking** using the compilers' include tracking mechanisms (`-M`/`/showIncludes`).
+5. [Minimal **library**](cbl.h) for exploring and manipulating the build environment: logging, time, file system, processes, etc.
+6. **Parallel execution** via tasks, based on [enkiTS](https://github.com/dougbinks/enkiTS).
+7. **Profiling** of every single build, based on [minitrace](https://github.com/hrydgard/minitrace).
 
-Will it be any faster than the existing systems? Or even reliable? Heck if I know. So far, I'm just enjoying myself.
+# Self-hosting
 
-# Self-hosting build system
+C++ compiles to native executables. It stands to reason that in order to achieve reasonable usability, bootstrapping the build system executable must be a trivial step.
 
-C++ compiles to native executables. It stands to reason that in order to achieve reasonable usability, bootstrapping the build system executable must be a trivial step. Once that is complete, we can use the full power of expression of C++ to self-host ourselves.
-
-Therefore, it is my goal to be able to bootstrap a first-generation `build`/`build.exe` binary with a trivial compiler invocation, such as this:
+Therefore, all it takes to bootstrap a first-generation `build`/`build.exe` binary is a trivial compiler invocation, such as this, on Linux with GCC:
 ```
 $ g++ -o build -pthread build.cpp && ./build
 ```
@@ -29,6 +29,8 @@ Or this, on Windows, in a Visual Studio Developer Command Prompt:
 cl.exe build.cpp && build.exe
 ```
 The invocation of `build`/`build.exe` will then build a second-generation *cppbuild* binary that has all the bells and whistles.
+
+After that, *cppbuild* will rebuild itself automatically and seamlessly as needed, when changes to your `build.cpp` file, or to *cppbuild* itself, are detected.
 
 # Getting started
 
