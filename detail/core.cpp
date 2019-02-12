@@ -350,16 +350,6 @@ namespace cppbuild
 			cbl::scheduler.AddTaskSetToPipe(&task);
 			cbl::scheduler.WaitforTask(&task);
 		}
-
-		// Once we're done processing, delete ourselves.
-		// FIXME: Can't delete ourselves because the scheduler makes an atomic write afterwards.
-#if 0
-		delete this;
-#else
-			// The next best thing is leaking just the string, but not its data.
-		log_dir.clear();
-		log_dir.shrink_to_fit();
-#endif
 	}
 }
 

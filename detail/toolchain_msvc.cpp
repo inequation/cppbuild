@@ -192,8 +192,7 @@ void msvc::generate_dependency_actions_for_cpptu(
 		graph::insert_dependency_cache(target, cfg, source, deps);
 	}
 	else
-		// FIXME: Find a proper way to report this and stop the build.
-		cbl::error("%s: Dependency scan failed with code %d%s%s", source, exit_code,
+		cbl::fatal(exit_code, "%s: Dependency scan failed with code %d%s%s", source, exit_code,
 			buffer.empty() ? "" : ", message:\n", buffer.empty() ? "" : (const char *)buffer.data());
 }
 

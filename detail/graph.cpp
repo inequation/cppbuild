@@ -1,5 +1,6 @@
 #include "../cppbuild.h"
 #include "../cbl.h"
+#include "detail.h"
 
 #include <mutex>
 #include <atomic>
