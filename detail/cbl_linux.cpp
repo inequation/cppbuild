@@ -583,7 +583,15 @@ void init_process_group()
 	using namespace cbl;
 	constexpr const char comm_ident[] = "cppbuild";
 
-	std::string comm = path::join("/proc/", std::to_string(getppid()), "comm");
+	// Mark ourselves as cppbuild for identification by children.
+	std::string comm = path::join("/proc/self/task", std::to_string(syscall(SYS_gettid)), "comm");
+	if (FILE *f = fopen(comm.c_str(), "w"))
+	{
+		fwrite(comm_ident, 1, sizeof(comm_ident) / sizeof(comm_ident[0]), f);
+		fclose(f);
+	}
+
+	comm = path::join("/proc/", std::to_string(getppid()), "comm");
 	if (FILE *f = fopen(comm.c_str(), "r"))
 	{
 		std::string parent(sizeof(comm_ident) * 2, 0);
@@ -594,14 +602,6 @@ void init_process_group()
 		if (parent == comm_ident)
 			// We are in a cppbuild process group already, no need to branch off.
 			return;
-	}
-
-	// Mark ourselves as cppbuild for identification by children.
-	comm = path::join("/proc/self/task", std::to_string(syscall(SYS_gettid)), "comm");
-	if (FILE *f = fopen(comm.c_str(), "w"))
-	{
-		fwrite(comm_ident, 1, sizeof(comm_ident) / sizeof(comm_ident[0]), f);
-		fclose(f);
 	}
 
 	if (0 != setpgrp())
