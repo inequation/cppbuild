@@ -228,10 +228,8 @@ namespace graph
 					if (spawned)
 					{
 						exit_code = spawned->wait();
-						if (exit_code != 0)
-						{
-							// FIXME: Conditionally cancel the build.
-						}
+						if (exit_code != 0 && g_options.fatal_errors.val.as_bool)
+							cbl::fatal(exit_code, "Building %s failed with code %d", outputs.c_str(), exit_code);
 					}
 				}
 			}

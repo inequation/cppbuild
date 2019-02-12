@@ -207,8 +207,9 @@ namespace cbl
 		{
 			int l = 0, r = s.size() - 1;
 
+			auto is_space_or_zero = [](int c) { return c == 0 || std::isspace(c); };
 			while (l < s.size() && std::isspace(s[l++]));
-			while (r >= 0 && std::isspace(s[r--]));
+			while (r >= 0 && is_space_or_zero(s[r--]));
 
 			if (l > r)
 			{
@@ -415,6 +416,16 @@ namespace cbl
 		va_start(va, fmt);
 		detail::log<severity::error>(fmt, va);
 		va_end(va);
+	}
+
+	void fatal(int exit_code, const char *fmt, ...)
+	{
+		va_list va;
+		va_start(va, fmt);
+		detail::log<severity::error>(fmt, va);
+		va_end(va);
+		// Just terminate without cleanup.
+		terminate_process_group(exit_code);
 	}
 
 	namespace time

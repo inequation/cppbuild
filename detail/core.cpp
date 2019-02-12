@@ -331,7 +331,7 @@ namespace cppbuild
 		for (const char *glob : globs)
 		{
 			auto old_logs = cbl::fs::enumerate_files(cbl::path::join(log_dir, glob).c_str());
-			constexpr size_t max_old_log_files = 10;	// TODO: Put this in config.
+			const size_t max_old_log_files = g_options.rotate_log_count.val.as_int64;
 			if (old_logs.size() > max_old_log_files)
 			{
 				std::sort(old_logs.begin(), old_logs.end(),

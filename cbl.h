@@ -194,6 +194,8 @@ namespace cbl
 	void log_verbose(const char* fmt, ...);
 	// Alias for log<debug>(...).
 	void log_debug(const char* fmt, ...);
+	// Logs error and terminates the cppbuild process tree.
+	void fatal(int exit_code, const char* fmt, ...);
 
 	// Wraps a string vector in a callable functor.
 	std::function<string_vector()> fvwrap(const std::string& s);

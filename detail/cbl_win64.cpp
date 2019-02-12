@@ -14,6 +14,19 @@
 
 namespace cbl
 {
+	namespace win64
+	{
+		inline std::string get_last_error_str()
+		{
+			DWORD error = GetLastError();
+			std::string buffer(256 - 1, 0);
+			FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+				nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+				const_cast<LPSTR>(buffer.data()), buffer.size(), nullptr);
+			return buffer;
+		}
+	}
+
 	namespace path
 	{
 		bool is_path_separator(char c)
@@ -367,15 +380,10 @@ namespace cbl
 
 			if (!CreateProcessA(nullptr, const_cast<LPSTR>(commandline.c_str()), nullptr, nullptr, TRUE, 0, environment, cwd, &start_info, &proc_info))
 			{
-				DWORD error = GetLastError();
-				char buffer[256];
-				FormatMessageA(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-					nullptr, error, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-					buffer, (sizeof(buffer) / sizeof(buffer[0])), nullptr);
-				buffer[sizeof(buffer) - 1] = 0;
+				auto reason = win64::get_last_error_str();
 
 				cbl::error("Failed to launch: %s", commandline.c_str());
-				cbl::error("Reason: %s", buffer);
+				cbl::error("Reason: %s", reason.c_str());
 
 				safe_close_handles(in);
 				safe_close_handles(out);
@@ -715,6 +723,45 @@ namespace cbl
 			}
 			return false;
 		}
+	}
+}
+
+static HANDLE g_job_object;
+
+void init_process_group()
+{
+	constexpr const char job_name[] = "cppbuild";	// FIXME: This will be a problem with multiple independent builds.
+
+	SECURITY_ATTRIBUTES sec_attr;
+	sec_attr.nLength = sizeof(sec_attr);
+	sec_attr.bInheritHandle = TRUE;
+	sec_attr.lpSecurityDescriptor = nullptr;
+
+	g_job_object = CreateJobObjectA(&sec_attr, job_name);
+	if (!g_job_object)
+	{
+		auto reason = cbl::win64::get_last_error_str();
+		cbl::log_verbose("Failed to branch off a process group, reason: %s", reason.c_str());
+	}
+	else
+	{
+		if (!AssignProcessToJobObject(g_job_object, GetCurrentProcess()))
+		{
+			auto reason = cbl::win64::get_last_error_str();
+			cbl::log_verbose("Failed to assign self to process group, reason: %s", reason.c_str());
+		}
+	}
+
+	atexit([]() { CloseHandle(g_job_object); });
+}
+
+void terminate_process_group(int exit_code)
+{
+	if (!TerminateJobObject(g_job_object, exit_code))
+	{
+		auto reason = cbl::win64::get_last_error_str();
+		cbl::log_verbose("Failed to terminate process group, reason: %s", reason.c_str());
+		exit(exit_code);
 	}
 }
 
