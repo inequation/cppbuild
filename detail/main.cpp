@@ -124,13 +124,17 @@ void dump_graph(std::shared_ptr<graph::action> root)
 	cbl::info("Dumping build graph:\n%s", dump.str().c_str());
 }
 
-std::pair<build_context, std::shared_ptr<graph::action>> setup_build(const target& target, const configuration& cfg, toolchain_map& toolchains)
+std::pair<build_context, std::shared_ptr<graph::action>> setup_build(target& target, const configuration& cfg, toolchain_map& toolchains)
 {
 	const char *used_tc = target.second.used_toolchain;
 	if (!used_tc)
 	{
 		used_tc = cbl::get_default_toolchain_for_host();
 	}
+
+	if (cbl::path::get_extension(target.second.output.c_str()).empty())
+		target.second.output += cbl::get_default_extension_for_product(
+			target.second.type, cfg.second.platform);
 
 	MTR_SCOPE_FUNC_S("Used toolchain", used_tc);
 
@@ -176,11 +180,7 @@ namespace bootstrap
 	{
 		using namespace cbl;
 
-		constexpr char cppbuild[] = "build"
-#if defined(_WIN64)
-			".exe"
-#endif
-			;
+		constexpr char cppbuild[] = "build";
 
 		target_data target;
 		target.output = path::join(path::get_cppbuild_cache_path(), "bin", cppbuild);
