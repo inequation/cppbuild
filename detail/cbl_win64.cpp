@@ -713,13 +713,20 @@ namespace cbl
 			}
 		}
 
-		bool wide_str_to_ansi_str(std::string& ansi, wchar_t *wide)
+		bool wide_str_to_utf8_str(std::string& utf8, wchar_t *wide)
 		{
-			ansi.resize(wcslen(wide) + 1);
-			if (int written = WideCharToMultiByte(CP_ACP, 0, wide, -1, (LPSTR)ansi.data(), ansi.size(), nullptr, nullptr))
+			utf8.resize(wcslen(wide) + 1);
+			for (;;)
 			{
-				ansi.resize(written - 1);
-				return true;
+				if (int written = WideCharToMultiByte(CP_UTF8, 0, wide, -1, (LPSTR)utf8.data(), utf8.size(), nullptr, nullptr))
+				{
+					utf8.resize(written - 1);
+					utf8.shrink_to_fit();
+					return true;
+				}
+				if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+					return false;
+				utf8.resize(utf8.size() * 2);
 			}
 			return false;
 		}

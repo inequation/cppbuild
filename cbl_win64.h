@@ -36,6 +36,6 @@ namespace cbl
 			void filter_own_pdb(string_vector& paths);
 		}
 
-		bool wide_str_to_ansi_str(std::string& ansi, wchar_t *wide);
+		bool wide_str_to_utf8_str(std::string& utf8, wchar_t *wide);
 	}
 }

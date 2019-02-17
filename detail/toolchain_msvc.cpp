@@ -356,7 +356,7 @@ void msvc::discover_compilers(msvc::discovered_components& compiler_dirs)
 		if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_ProgramData, 0, nullptr, &program_data)))
 		{
 			std::string path;
-			if (win64::wide_str_to_ansi_str(path, program_data))
+			if (win64::wide_str_to_utf8_str(path, program_data))
 			{
 				path = path::join(path, path::join("Microsoft\\VisualStudio\\Setup\\x64", dll_name));
 				vsscfg = LoadLibraryA(path.c_str());
@@ -404,7 +404,7 @@ void msvc::discover_compilers(msvc::discovered_components& compiler_dirs)
 							if (SUCCEEDED(inst2->GetInstallationVersion(&bstr)))
 							{
 								std::string version_str;
-								if (cbl::win64::wide_str_to_ansi_str(version_str, bstr))
+								if (cbl::win64::wide_str_to_utf8_str(version_str, bstr))
 								{
 									number.parse(version_str.c_str());
 								}
@@ -420,7 +420,7 @@ void msvc::discover_compilers(msvc::discovered_components& compiler_dirs)
 								continue;
 
 							std::string path;
-							if (win64::wide_str_to_ansi_str(path, bstr))
+							if (win64::wide_str_to_utf8_str(path, bstr))
 							{
 								auto subdirs = fs::enumerate_directories(path::join(path.c_str(), "VC\\Tools\\MSVC\\*").c_str());
 								for (const auto& dir : subdirs)
