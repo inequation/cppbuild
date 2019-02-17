@@ -424,6 +424,11 @@ namespace cbl
 		va_start(va, fmt);
 		detail::log<severity::error>(fmt, va);
 		va_end(va);
+		// Make sure to flush all logs.
+		if (detail::log_file_stream)
+			fclose(detail::log_file_stream);
+		if (detail::trace_file_stream)
+			mtr_shutdown();
 		// Just terminate without cleanup.
 		terminate_process_group(exit_code);
 	}
