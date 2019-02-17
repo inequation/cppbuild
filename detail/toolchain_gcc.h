@@ -2,44 +2,39 @@
 
 #include "../cppbuild.h"
 
-struct gcc : public toolchain
+struct gcc : public generic_cpp_toolchain
 {
 	constexpr static const char key[] = "gcc";
-
-	static std::string get_object_for_cpptu(
-		const std::string& source,
-		const target &target,
-		const configuration &cfg);
 
 	virtual void pick_toolchain_versions();
 
 	bool initialize() override;
 
-	cbl::deferred_process schedule_compiler(
-		const target& target,
-		const std::string& object,
-		const std::string& source,
-		const configuration& cfg,
-		const cbl::pipe_output_callback& on_stderr,
-		const cbl::pipe_output_callback& on_stdout) override;
+	std::string generate_compiler_response(
+		build_context &,
+		const char *object,
+		const char *source) override;
 
-	cbl::deferred_process schedule_linker(
-		const target& target,
-		const string_vector& source_paths,
-		const configuration& cfg,
-		const cbl::pipe_output_callback& on_stderr,
-		const cbl::pipe_output_callback& on_stdout) override;
+	std::string generate_linker_response(
+		build_context &,
+		const char *product_path,
+		const graph::action_vector& source_paths) override;
+
+	cbl::deferred_process schedule_compiler(build_context &,
+		const char *path_to_response_file) override;
+	cbl::deferred_process schedule_linker(build_context &,
+		const char *path_to_response_file) override;
 
 	void generate_dependency_actions_for_cpptu(
-		const target& target,
-		const std::string& source,
-		const configuration& cfg,
-		std::vector<std::shared_ptr<graph::action>>& inputs);
+		build_context &,
+		const char *source,
+		const char *response_file,
+		const char *response,
+		std::vector<std::shared_ptr<graph::action>>& inputs) override;
 
-	std::shared_ptr<graph::action> generate_compile_action_for_cpptu(
-		const target& target,
-		const std::string& tu_path,
-		const configuration& cfg) override;
+	std::string get_object_for_cpptu(
+		build_context &,
+		const char *source) override;
 
 	bool deploy_executable_with_debug_symbols(
 		const char *existing_path,
@@ -50,8 +45,10 @@ struct gcc : public toolchain
 protected:
 	static version query_gcc_version(const char *path);
 
-private:
-	std::string compiler_dir;
+	cbl::deferred_process launch_gcc(const char *response, const char *additional_args);
 
-	std::string generate_gcc_commandline_shared(const target& target, const configuration& cfg, const bool for_linking);
+private:
+	std::string gcc_path;
+
+	std::string generate_gcc_commandline_shared(build_context &, const bool for_linking);
 };

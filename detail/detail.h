@@ -16,6 +16,8 @@ enum class error_code : int
 
 	unknown_target,
 	unknown_configuration,
+
+	failed_writing_response_file,
 };
 
 namespace cppbuild

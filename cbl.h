@@ -68,9 +68,11 @@ namespace cbl
 		{
 			static configuration_data c;
 			c.platform = p;
+			c.standard = configuration_data::Cxx14;
 			c.emit_debug_information = true;
 			c.optimize = configuration_data::O1;
 			c.use_debug_crt = true;
+			c.use_exceptions = false;
 			return c;
 		};
 
@@ -78,9 +80,11 @@ namespace cbl
 		{
 			static configuration_data c;
 			c.platform = p;
+			c.standard = configuration_data::Cxx14;
 			c.emit_debug_information = true;
 			c.optimize = configuration_data::O2;
 			c.use_debug_crt = true;
+			c.use_exceptions = false;
 			return c;
 		};
 
@@ -88,9 +92,11 @@ namespace cbl
 		{
 			static configuration_data c;
 			c.platform = p;
+			c.standard = configuration_data::Cxx14;
 			c.emit_debug_information = true;
 			c.optimize = configuration_data::O3;
 			c.use_debug_crt = false;
+			c.use_exceptions = false;
 			return c;
 		};
 	};
@@ -171,6 +177,8 @@ namespace cbl
 	constexpr const char *get_host_platform_str();
 
 	constexpr const char *get_default_toolchain_for_host();
+
+	constexpr const char *get_default_extension_for_product(target_data::target_type, platform p = get_host_platform());
 
 	size_t combine_hash(size_t a, size_t b);
 
@@ -254,31 +262,51 @@ namespace cbl
 // Inline implementations go here.
 namespace cbl
 {
-	constexpr const char* get_default_toolchain_for_host()
+	namespace detail
 	{
 		constexpr const char *toolchain_names[] =
 		{
 			"msvc",	// win64
 			"gcc"	// linux
 		};
-		return toolchain_names[(uint8_t)get_host_platform()];
+
+		constexpr const char *extension_table[size_t(platform::platform_count)][size_t(target_data::dynamic_library) + 1] =
+		{
+			// -------- executable	static_library	dynamic_library
+			{	// win64
+						".exe",		".lib",			".dll",
+			},
+			{	// linux64
+						"",			".lib",			".so",
+			},
+		};
+	}
+
+	constexpr const char* get_default_toolchain_for_host()
+	{
+		return detail::toolchain_names[(uint8_t)get_host_platform()];
 	}
 
 	constexpr const char *get_platform_str(platform p)
 	{
-#define IF_ENUM_STR(x)	if (p == platform::x) return #x;
-		IF_ENUM_STR(win64)
-		else IF_ENUM_STR(linux64)
-		else IF_ENUM_STR(macos)
-		else IF_ENUM_STR(ps4)
-		else IF_ENUM_STR(xbox1)
-		else return (assert(!"Unknown platform"), "unknown");
+#define IF_ENUM_STR(x)	(p == platform::x) ? #x :
+		return IF_ENUM_STR(win64)
+			IF_ENUM_STR(linux64)
+			(assert(!"Unknown platform"), "unknown");
 #undef IF_ENUM_STR
 	}
 
 	constexpr const char *get_host_platform_str()
 	{
 		return get_platform_str(get_host_platform());
+	}
+
+	constexpr const char *get_default_extension_for_product(target_data::target_type t, platform p)
+	{
+		return
+			assert(size_t(p) < sizeof(detail::extension_table) / sizeof(detail::extension_table[0])),
+			assert(size_t(t) < sizeof(detail::extension_table[0]) / sizeof(detail::extension_table[0][0])),
+			detail::extension_table[size_t(p)][size_t(t)];
 	}
 
 	template <typename loop_body>

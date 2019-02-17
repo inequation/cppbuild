@@ -27,9 +27,8 @@ enum class platform
 {
 	win64,
 	linux64,
-	macos,
-	ps4,
-	xbox1,
+
+	platform_count
 };
 
 struct version
@@ -49,6 +48,16 @@ struct configuration_data
 {
 	::platform platform;
 
+	enum
+	{
+		Cxx98 = 98,
+		Cxx03 = 03,
+		Cxx11 = 11,
+		Cxx14 = 14,
+		Cxx17 = 17,
+		Cxx20 = 20
+	} standard;
+
 	bool emit_debug_information;
 	enum
 	{
@@ -56,17 +65,23 @@ struct configuration_data
 		Os = 100
 	} optimize;
 	bool use_debug_crt;
+	bool use_exceptions;
 	
 	std::vector<std::pair<std::string, std::string>> definitions;
+	// Transient definitions aren't part of the response file and their value does not affect whether the action is up to date. Use them for things such as revision/changelist information.
+	std::vector<std::pair<std::string, std::string>> transient_definitions;
 	string_vector additional_include_directories;
 
-	bool use_incremental_linking;
-
-	std::unordered_map<std::string, string_vector> additional_toolchain_options;
+	std::unordered_map<std::string, std::string> additional_toolchain_options;
 };
 typedef std::pair<std::string, configuration_data> configuration;
 
-namespace graph { struct action; };
+namespace graph
+{
+	struct action;
+	struct cpp_action;
+	using action_vector = std::vector<std::shared_ptr<action>>;
+};
 namespace cbl
 {
 	struct process;
@@ -104,30 +119,74 @@ typedef std::pair<std::string, target_data> target;
 struct toolchain
 {
 	virtual bool initialize() = 0;
-	virtual cbl::deferred_process schedule_compiler(
-		const target& target,
-		const std::string& object_path,
-		const std::string& source_path,
-		const configuration&,
-		const cbl::pipe_output_callback& on_stderr,
-		const cbl::pipe_output_callback& on_stdout) = 0;
-	virtual cbl::deferred_process schedule_linker(
-		const target& target,
-		const string_vector& source_paths,
-		const configuration&,
-		const cbl::pipe_output_callback& on_stderr,
-		const cbl::pipe_output_callback& on_stdout) = 0;
+	virtual cbl::deferred_process schedule_compiler(struct build_context &,
+		const char *path_to_response_file) = 0;
+	virtual cbl::deferred_process schedule_linker(struct build_context &,
+		const char *path_to_response_file) = 0;
 	virtual std::shared_ptr<graph::action> generate_compile_action_for_cpptu(
-		const target& target,
-		const std::string& path,
-		const configuration&)
-	{ return nullptr; };
-	virtual bool deploy_executable_with_debug_symbols(const char *existing_path, const char *new_path) = 0;
-	static std::string get_intermediate_path_for_cpptu(const char *source_path, const char *object_extension, const target &, const configuration &);
+		struct build_context &,
+		const char *path) = 0;
+	virtual std::shared_ptr<graph::action> generate_link_action_for_objects(
+		struct build_context &,
+		const graph::action_vector& objects) = 0;
+	virtual bool deploy_executable_with_debug_symbols(
+		const char *existing_path,
+		const char *new_path) = 0;
+};
+
+struct generic_cpp_toolchain : public toolchain
+{
+	std::shared_ptr<graph::action> generate_compile_action_for_cpptu(
+		struct build_context &,
+		const char *tu_path) override;
+
+	std::shared_ptr<graph::action> generate_link_action_for_objects(
+		struct build_context &,
+		const graph::action_vector& objects) override;
+
+	virtual void generate_dependency_actions_for_cpptu(
+		struct build_context &,
+		const char *source,
+		const char *response_file,
+		const char *response,
+		std::vector<std::shared_ptr<graph::action>>& inputs) = 0;
+
+	virtual std::string generate_compiler_response(
+		struct build_context &,
+		const char *object_path,
+		const char *source_path) = 0;
+	virtual std::string generate_linker_response(
+		struct build_context &,
+		const char *product_path,
+		const graph::action_vector& source_paths) = 0;
+
+	virtual std::string get_object_for_cpptu(
+		struct build_context &,
+		const char *source) = 0;
+	static std::string get_intermediate_path_for_cpptu(
+		struct build_context &,
+		const char *source_path,
+		const char *object_extension);
+	static std::string get_response_file_for_cpptu(
+		struct build_context &,
+		const char *source_path);
+	static std::string get_response_file_for_link_product(
+		struct build_context &,
+		const char *product_path);
+	static void update_response_file(
+		struct build_context &,
+		const char *response_file,
+		const char *response_str);
 };
 
 typedef std::unordered_map<std::string, configuration_data> configuration_map;
 typedef std::unordered_map<std::string, std::shared_ptr<toolchain>> toolchain_map;
+struct build_context
+{
+	const target &trg;
+	const configuration &cfg;
+	toolchain &tc;
+};
 
 //=============================================================================
 
@@ -137,13 +196,15 @@ namespace graph
 	{
 		enum action_type
 		{
-			cpp_actions_begin = 0,						// Beginning of C++-specific action types. For details, see cpp_action.
-			cpp_actions_end = 5,						// End of C++-specific action types.
-			deploy_actions_begin = cpp_actions_end,		// Beginning of deployment action types.
-			deploy_actions_end,							// End of deployment action types.
-			custom_actions_begin = deploy_actions_end	// Beginning of custom, user-implementable actions.
+			cpp_actions_begin = 0,							// Beginning of C++-specific action types. For details, see cpp_action.
+			cpp_actions_end = /*cpp_action::include*/3 + 1,	// End of C++-specific action types.
+
+			deploy_actions_begin = cpp_actions_end,			// Beginning of deployment action types.
+			deploy_actions_end = deploy_actions_begin + 1,				// End of deployment action types.
+
+			custom_actions_begin = deploy_actions_end		// Beginning of custom, user-implementable actions.
 		} type;
-		std::vector<std::shared_ptr<action>> inputs;
+		action_vector inputs;
 		string_vector outputs;
 		std::vector<uint64_t> output_timestamps;
 
@@ -160,30 +221,32 @@ namespace graph
 			compile,							// Translation unit compilation.
 			source,								// Symbollic action of a translation unit. May only have include inputs.
 			include,							// Included file that does not get directly compiled as a TU, but influences the output. Cannot have further inputs, nested includes are listed as inputs to the TU that includes them.
-			generate							// Generated source, e.g. by means of MOC in Qt-based projects. May have inputs (i.e. source files for the generator); generated files with no inputs will be treated as always out of date.
 		};
-		static_assert((action::action_type)generate < action::cpp_actions_end, "Action type range overflow; increase action::cpp_actions_end");
+		static_assert((action::action_type)include < action::cpp_actions_end, "Action type range overflow; increase action::cpp_actions_end");
+
+		std::string response_file;
 
 		bool are_dependencies_met() override;
 	};
 
 	using dependency_timestamp_vector = std::vector<std::pair<std::string, uint64_t>>;
-	using timestamp_cache = std::unordered_map<std::string, dependency_timestamp_vector>;
-	using timestamp_cache_entry = timestamp_cache::value_type;
-	bool query_dependency_cache(const target &target, const configuration &cfg, const std::string& source, std::function<void(const std::string &)> push_dep);
-	void insert_dependency_cache(const target &target, const configuration &cfg, const std::string& source, const dependency_timestamp_vector &deps);
+	bool query_dependency_cache(build_context &,
+		const std::string& source,
+		const char *response,
+		std::function<void(const std::string &)> push_dep);
+	void insert_dependency_cache(build_context &,
+		const std::string& source,
+		const char *response,
+		const dependency_timestamp_vector &deps);
 	void save_timestamp_caches();
 
-	std::shared_ptr<action> generate_cpp_build_graph(const target& target, const configuration& c, std::shared_ptr<struct toolchain> tc);
-	void cull_build_graph(std::shared_ptr<action>& root);
-	int execute_build_graph(
-		const target& target,
-		std::shared_ptr<action> root,
-		const configuration& cfg,
-		std::shared_ptr<toolchain> tc,
-		const cbl::pipe_output_callback& on_stderr,
-		const cbl::pipe_output_callback& on_stdout);
-	void clean_build_graph_outputs(std::shared_ptr<action> root);
+	std::shared_ptr<action> generate_cpp_build_graph(build_context &);
+	void cull_build_graph(build_context &,
+		std::shared_ptr<action>& root);
+	int execute_build_graph(build_context &,
+		std::shared_ptr<action> root);
+	void clean_build_graph_outputs(build_context &,
+		std::shared_ptr<action> root);
 };
 
 //=============================================================================

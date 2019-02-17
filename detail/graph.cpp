@@ -5,22 +5,21 @@
 #include <mutex>
 #include <atomic>
 
-namespace graph
-{
-	namespace detail
-	{
-		using cache_map_key = std::pair<target, configuration>;
-	}
-}
-bool operator==(const graph::detail::cache_map_key &a, const graph::detail::cache_map_key &b)
+using namespace graph;
+
+using cache_map_key = std::pair<target, configuration>;
+using timestamp_cache_key = std::pair<std::string, std::string>;
+
+bool operator==(const cache_map_key &a, const cache_map_key &b)
 {
 	return a.first.first == b.first.first && a.second.first == b.second.first;
 }
+
 namespace std
 {
-	template <> struct hash<graph::detail::cache_map_key>
+	template <> struct hash<cache_map_key>
 	{
-		size_t operator()(const graph::detail::cache_map_key &k) const
+		size_t operator()(const cache_map_key &k) const
 		{
 			using namespace cbl;
 			hash<string> string_hasher;
@@ -28,398 +27,570 @@ namespace std
 			return combine_hash(string_hasher(k.first.first), byte_hasher(static_cast<uint8_t>(k.second.second.platform)));
 		}
 	};
+
+	template <> struct hash<timestamp_cache_key>
+	{
+		size_t operator()(const timestamp_cache_key &k) const
+		{
+			using namespace cbl;
+			hash<string> string_hasher;
+			return combine_hash(string_hasher(k.first), string_hasher(k.second));
+		}
+	};
 }
 
-namespace graph
+using timestamp_cache = std::unordered_map<timestamp_cache_key, dependency_timestamp_vector>;
+using timestamp_cache_entry = timestamp_cache::value_type;
+
+template <typename T>
+static inline void atomic_max(std::atomic<T>& max, T const& value) noexcept
 {
-	namespace detail
+	T prev_value = max;
+	while (prev_value < value && !max.compare_exchange_weak(prev_value, value));
+}
+
+struct input_cull_context
+{
+	graph::action *action;
+	std::atomic_uint64_t self_timestamp;
+	const uint64_t root_timestamp;
+
+	// Old-school workaround for GCC insisting on selecting the std::atomic<long unsigned int>::atomic(const std::atomic<long unsigned int>&) constructor in the aggregate initializer.
+	input_cull_context(graph::action *action_, uint64_t self_timestamp_, const uint64_t root_timestamp_)
+		: action(action_)
+		, self_timestamp(self_timestamp_)
+		, root_timestamp(root_timestamp_)
+	{}
+};
+
+static inline void cull_input(input_cull_context &ctx, std::shared_ptr<graph::action> &input, uint64_t stamp_if_missing = 0)
+{
+	MTR_SCOPE_FUNC();
+	uint64_t input_timestamp = input ? input->get_oldest_output_timestamp() : stamp_if_missing;
+	
+	const bool input_exists = input_timestamp > 0;
+	const bool older_than_graph_root = !input || input_timestamp < ctx.root_timestamp;
+	const bool output_exists = ctx.self_timestamp > 0;
+
+	// Only cull inputs if we exist.
+	if (input_exists && older_than_graph_root && output_exists)
 	{
-		template <typename T>
-		inline void atomic_max(std::atomic<T>& max, T const& value) noexcept
+		if (input)
+			cbl::log_debug("Culling INPUT type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
+				input->type, input->outputs[0].c_str(), ctx.action->outputs[0].c_str(), ctx.self_timestamp.load(), input_timestamp, ctx.root_timestamp);
+		input = nullptr;
+	}
+	else
+	{
+		cbl::log_debug("Bumping self timestamp from input type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
+			input->type, input->outputs[0].c_str(), ctx.action->outputs[0].c_str(), ctx.self_timestamp.load(), input_timestamp, ctx.root_timestamp);
+		// Keep own timestamp up to date with inputs.
+		if (input_timestamp == 0 || ctx.self_timestamp == 0)
+			ctx.self_timestamp = 0;
+		else
+			atomic_max(ctx.self_timestamp, input_timestamp);
+	}
+};
+
+static void prune_inputs(graph::action_vector &inputs)
+{
+	MTR_SCOPE_FUNC();
+	for (int i = inputs.size() - 1; i >= 0; --i)
+	{
+		if (nullptr == inputs[i])
+			inputs.erase(inputs.begin() + i);
+	}
+	inputs.shrink_to_fit();
+};
+
+static void cull_action(build_context &bctx, std::shared_ptr<graph::action>& action, uint64_t root_timestamp)
+{
+	using namespace graph;
+
+	static const char *types[] =
+	{
+		"Cull: link",
+		"Cull: compile",
+		"Cull: source",
+		"Cull: include"
+	};
+	static_assert(sizeof(types) / sizeof(types[0]) == action::cpp_actions_end, "Missing string for action type");
+	MTR_SCOPE(__FILE__, action->type <= cpp_action::include ? types[action->type] : "Cull: action");
+			
+	input_cull_context ictx{ action.get(), action->get_oldest_output_timestamp(), root_timestamp };
+
+	switch (action->type)
+	{
+	case cpp_action::include:
+		assert(!"We ought to be culled by the parent");
+		return;
+	case cpp_action::source:
+		cbl::parallel_for([&](uint32_t i)
 		{
-			T prev_value = max;
-			while (prev_value < value && !max.compare_exchange_weak(prev_value, value));
-		}
-
-		void cull_action(std::shared_ptr<action>& action, uint64_t root_timestamp)
-		{
-			static const char *types[] =
-			{
-				"Cull: link",
-				"Cull: compile",
-				"Cull: source",
-				"Cull: include",
-				"Cull: generate"
-			};
-			static_assert(sizeof(types) / sizeof(types[0]) == graph::action::cpp_actions_end, "Missing string for action type");
-			MTR_SCOPE(__FILE__, action->type <= cpp_action::generate ? types[action->type] : "Cull: action");
-			std::atomic_uint64_t self_timestamp(action->get_oldest_output_timestamp());
-			auto update_self_timestamp = [&self_timestamp](uint64_t input_timestamp)
-			{
-				if (input_timestamp == 0 || self_timestamp == 0)
-					self_timestamp = 0;
-				else
-					atomic_max(self_timestamp, input_timestamp);
-			};
-
-			auto cull_input = [&](std::shared_ptr<graph::action> &input, uint64_t stamp_if_missing = 0)
-			{
-				MTR_SCOPE(__FILE__, "cull_input");
-				uint64_t input_timestamp = input ? input->get_oldest_output_timestamp() : stamp_if_missing;
-				// Only cull inputs if we exist.
-				if (input_timestamp > 0 && (!input || input_timestamp < root_timestamp) && self_timestamp > 0)
-				{
-					if (input)
-						cbl::log_debug("Culling INPUT type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
-							input->type, input->outputs[0].c_str(), action->outputs[0].c_str(), self_timestamp.load(), input_timestamp, root_timestamp);
-					input = nullptr;
-				}
-				else
-				{
-					cbl::log_debug("Bumping self timestamp from input type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
-						input->type, input->outputs[0].c_str(), action->outputs[0].c_str(), self_timestamp.load(), input_timestamp, root_timestamp);
-					// Keep own timestamp up to date with inputs.
-					if (input_timestamp == 0 || self_timestamp == 0)
-						self_timestamp = 0;
-					else
-						atomic_max(self_timestamp, input_timestamp);
-				}
-			};
-
-			auto prune_inputs = [](std::vector<std::shared_ptr<graph::action>> &inputs)
-			{
-				MTR_SCOPE(__FILE__, "prune_inputs");
-				for (int i = inputs.size() - 1; i >= 0; --i)
-				{
-					if (nullptr == inputs[i])
-						inputs.erase(inputs.begin() + i);
-				}
-				inputs.shrink_to_fit();
-			};
-
-			switch (action->type)
+			uint64_t start = cbl::time::now();
+			auto& input = action->inputs[i];
+			switch (input->type)
 			{
 			case cpp_action::include:
-				assert(!"We ought to be culled by the parent");
-				return;
+				cull_input(ictx, input);
+			break;
 			case cpp_action::source:
-				cbl::parallel_for([&](uint32_t i)
-				{
-					uint64_t start = cbl::time::now();
-					auto& input = action->inputs[i];
-					switch (input->type)
-					{
-					case cpp_action::include:
-						cull_input(input);
-					break;
-					case cpp_action::source:
-						assert(!"Source actions may only have includes as input");
-						break;
-					default:
-						assert(!"Unimplmented");
-						abort();
-					}
-				},
-					action->inputs.size(), 100);
-				prune_inputs(action->inputs);
-				action->output_timestamps[0] = self_timestamp;
+				assert(!"Source actions may only have includes as input");
 				break;
-			case cpp_action::compile:
-			case cpp_action::link:
-			{
-				decltype(action->inputs) backup_inputs;
-				const bool is_linking = action->type == cpp_action::link;
-				if (is_linking)
-				{
-					// For linking, if any input remains at all, we need to link all of them.
-					backup_inputs.insert(backup_inputs.begin(), action->inputs.begin(), action->inputs.end());
-				}
-				cbl::parallel_for([&](uint32_t i)
-					{
-						uint64_t start = cbl::time::now();
-						auto& input = action->inputs[i];
-						cull_action(input, root_timestamp);
-						cull_input(input, ~0u);
-					},
-					action->inputs.size(), 1);
-				prune_inputs(action->inputs);
-				if (is_linking && !action->inputs.empty() && action->inputs.size() < backup_inputs.size())
-				{
-					for (auto &bi : backup_inputs)
-					{
-						auto predicate = [&bi](const std::shared_ptr<graph::action> &in)
-						{
-							if (in->outputs.size() == bi->outputs.size())
-							{
-								for (size_t i = 0; i < in->outputs.size(); ++i)
-								{
-									// We can test for identity because the backup is a clone.
-									if (in->outputs[i] != bi->outputs[i])
-										return false;
-								}
-								return true;
-							}
-							return false;
-						};
-						if (action->inputs.end() == std::find_if(action->inputs.begin(), action->inputs.end(), predicate))
-						{
-							// We don't need to build the object, but we need to consume it.
-							bi->inputs.clear();
-							action->inputs.push_back(bi);
-						}
-					}
-				}
-				if (action->inputs.empty() && root_timestamp != 0)
-				{
-					cbl::log_debug("Culling ACTION type %d %s (%d inputs remaining)", action->type, action->outputs[0].c_str(), action->inputs.size());
-					action = nullptr;
-				}
-				else
-				{
-					action->output_timestamps[0] = self_timestamp;
-				}
-				break;
-			}
 			default:
 				assert(!"Unimplmented");
 				abort();
 			}
+		},
+			action->inputs.size(), 100);
+		prune_inputs(action->inputs);
+		action->output_timestamps[0] = ictx.self_timestamp;
+		break;
+	case cpp_action::compile:
+	case cpp_action::link:
+	{
+		const auto rf_path = static_cast<cpp_action *>(action.get())->response_file.c_str();
+		const auto rf_timestamp = cbl::fs::get_modification_timestamp(rf_path);
+		if (ictx.self_timestamp < rf_timestamp)
+		{
+			// Response file is newer, which means that compilation flags have changed.
+			cbl::log_debug("Response file newer than product for ACTION type %d %s (%d inputs remaining; self=%" PRIu64 ", rf=%" PRIu64 ")", action->type, action->outputs[0].c_str(), action->inputs.size(), ictx.self_timestamp.load(), rf_timestamp);
+			ictx.self_timestamp = rf_timestamp;
 		}
-
-		using task_set_ptr = std::shared_ptr<enki::ITaskSet>;
-
-		struct build_context
+		else
 		{
-			const ::target& target;
-			const configuration& cfg;
-			std::shared_ptr<toolchain> tc;
-			const cbl::pipe_output_callback& on_stderr;
-			const cbl::pipe_output_callback& on_stdout;
-		};
-
-		task_set_ptr enqueue_build_tasks(build_context ctx, std::shared_ptr<action> root);
-
-		class build_task : public enki::ITaskSet
-		{
-		protected:
-			build_context ctx;
-			std::shared_ptr<action> root;
-		public:
-			cbl::deferred_process process;
-			int exit_code = -1;
-
-			build_task(build_context &context, std::shared_ptr<action> root_action, cbl::deferred_process work = nullptr,
-				uint32_t set_size = 1, uint32_t min_size_for_splitting_to_threads = 1)
-				: enki::ITaskSet(set_size, min_size_for_splitting_to_threads)
-				, ctx(context)
-				, root(root_action)
-				, process(work)
-			{}
-			
-			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+			decltype(action->inputs) backup_inputs;
+			const bool is_linking = action->type == cpp_action::link;
+			if (is_linking)
 			{
-				if (process)
+				// For linking, if any input remains at all, we need to link all of them.
+				backup_inputs.insert(backup_inputs.begin(), action->inputs.begin(), action->inputs.end());
+			}
+			cbl::parallel_for([&](uint32_t i)
+			{
+				uint64_t start = cbl::time::now();
+				auto& input = action->inputs[i];
+				cull_action(bctx, input, root_timestamp);
+				cull_input(ictx, input, ~0u);
+			},
+				action->inputs.size(), 1);
+			prune_inputs(action->inputs);
+
+			if (is_linking && !action->inputs.empty() && action->inputs.size() < backup_inputs.size())
+			{
+				for (auto &bi : backup_inputs)
 				{
-					std::string outputs = cbl::join(root->outputs, " ");
-					// Avoid JSON escape sequence issues.
-					for (auto& c : outputs) { if (c == '\\') c = '/'; }
-					cbl::info("%s", ("Building " + outputs).c_str());
-					MTR_SCOPE_S(__FILE__, "Build task", "outputs", outputs.c_str());
-					auto spawned = process();
-					if (spawned)
+					auto predicate = [&bi](const std::shared_ptr<graph::action> &in)
 					{
-						exit_code = spawned->wait();
-						if (exit_code != 0 && g_options.fatal_errors.val.as_bool)
-							cbl::fatal(exit_code, "Building %s failed with code %d", outputs.c_str(), exit_code);
+						if (in->outputs.size() == bi->outputs.size())
+						{
+							for (size_t i = 0; i < in->outputs.size(); ++i)
+							{
+								// We can test for identity because the backup is a clone.
+								if (in->outputs[i] != bi->outputs[i])
+									return false;
+							}
+							return true;
+						}
+						return false;
+					};
+					if (action->inputs.end() == std::find_if(action->inputs.begin(), action->inputs.end(), predicate))
+					{
+						// We don't need to build the object, but we need to consume it.
+						bi->inputs.clear();
+						action->inputs.push_back(bi);
 					}
 				}
 			}
-		};
-
-		class build_task_with_deps : public build_task
-		{
-		protected:
-			void dispatch_subtasks_and_wait()
-			{
-				MTR_SCOPE_FUNC();
-				// FIXME: Creating a ton of task sets is excessive, we should create one task set and feed it arrays instead.
-				std::vector<std::shared_ptr<enki::ITaskSet>> subtasks;
-				subtasks.reserve(root->inputs.size());
-				for (auto i : root->inputs)
-				{
-					if (auto subtask = enqueue_build_tasks(ctx, i))
-						subtasks.push_back(subtask);
-				}
-				// Issue the subtasks.
-				for (auto& t : subtasks)
-					cbl::scheduler.AddTaskSetToPipe(t.get());
-				// Wait for them to complete.
-				int dep_exit_code = 0;
-				for (auto& t : subtasks)
-				{
-					cbl::scheduler.WaitforTask(t.get());
-					// Propagate the first non-success exit code.
-					if (dep_exit_code == 0)
-						dep_exit_code = std::static_pointer_cast<build_task_with_deps>(t)->exit_code;
-				}
-				exit_code = dep_exit_code;
-			}
-
-		public:
-			build_task_with_deps(build_context &context, std::shared_ptr<action> root_action, cbl::deferred_process work = nullptr)
-				: build_task(context, root_action, work, 1)
-			{}
-
-			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-			{
-				dispatch_subtasks_and_wait();
-				if (exit_code == 0)
-					// Dependencies ran correctly, run our own stuff.
-					build_task::ExecuteRange(range, threadnum);
-			}
-		};
-
-		class compile_task : public build_task
-		{
-		public:
-			compile_task(build_context& context, std::shared_ptr<action> root)
-				: build_task(context, root,
-					context.tc->schedule_compiler(
-						context.target,
-						root->outputs[0],
-						root->inputs[0]->outputs[0],
-						context.cfg, context.on_stderr, context.on_stdout))
-			{}
-
-			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-			{
-				MTR_SCOPE(__FILE__, "Compile");
-
-				assert(root->outputs.size() == 1);
-				assert(root->inputs.size() == 1);
-				auto i = root->inputs[0];
-				assert(i->outputs.size() == 1);
-				assert(i->type == (action::action_type)cpp_action::source);
-
-				// FIXME: Find a more appropriate place for this mkdir.
-				cbl::fs::mkdir(cbl::path::get_directory(root->outputs[0].c_str()).c_str(), true);
-				
-				build_task::ExecuteRange(range, threadnum);
-			}
-		};
-
-		class link_task : public build_task_with_deps
-		{
-		public:
-			link_task(build_context &context, std::shared_ptr<action> root)
-				: build_task_with_deps(context, root)
-			{
-				string_vector inputs;
-				for (auto i : root->inputs)
-				{
-					assert(i->type == (action::action_type)cpp_action::compile);
-					inputs.insert(inputs.begin(), i->outputs.begin(), i->outputs.end());
-				}
-				process = ctx.tc->schedule_linker(
-					ctx.target,
-					inputs,
-					ctx.cfg, ctx.on_stderr, ctx.on_stdout);
-			}
-
-			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-			{
-				MTR_SCOPE(__FILE__, "Link");
-				build_task_with_deps::ExecuteRange(range, threadnum);
-			}
-		};
-
-		class generate_task : public build_task_with_deps
-		{
-		public:
-			using build_task_with_deps::build_task_with_deps;
-
-			void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-			{
-				// Only run subtasks.
-				// TODO: Revise this if we ever need to actually spawn a process here.
-				dispatch_subtasks_and_wait();
-			}
-		};
-
-		task_set_ptr enqueue_build_tasks(build_context ctx, std::shared_ptr<action> root)
-		{
-			MTR_SCOPE_FUNC();
-			if (!root)
-			{
-				// Empty graph, nothing to build.
-				return 0;
-			}
-			if (root->inputs.empty())
-			{
-				// This action is built and is probably a dependency up the tree.
-				return 0;
-			}
-			switch (root->type)
-			{
-			case cpp_action::link:
-				return std::make_shared<link_task>(ctx, root);
-			case cpp_action::compile:
-				return std::make_shared<compile_task>(ctx, root);
-			case cpp_action::generate:
-				return std::make_shared<generate_task>(ctx, root);
-			default:
-				assert(!"Unimplmented");
-				break;
-			}
-			return nullptr;
 		}
-	};
 
-	std::shared_ptr<action> generate_cpp_build_graph(const target& target, const configuration& cfg, std::shared_ptr<toolchain> tc)
+		if (action->inputs.empty() && root_timestamp != 0)
+		{
+			cbl::log_debug("Culling ACTION type %d %s (%d inputs remaining)", action->type, action->outputs[0].c_str(), action->inputs.size());
+			action = nullptr;
+		}
+		else
+		{
+			action->output_timestamps[0] = ictx.self_timestamp;
+		}
+		break;
+	}
+	default:
+		assert(!"Unimplmented");
+		abort();
+	}
+}
+
+using task_set_ptr = std::shared_ptr<enki::ITaskSet>;
+
+task_set_ptr enqueue_build_tasks(build_context &ctx, std::shared_ptr<graph::action> root);
+
+class build_task : public enki::ITaskSet
+{
+protected:
+	build_context ctx;
+	std::shared_ptr<graph::action> root;
+public:
+	cbl::deferred_process process;
+	int exit_code = -1;
+
+	build_task(build_context &context, std::shared_ptr<graph::action> root_action, cbl::deferred_process work = nullptr,
+		uint32_t set_size = 1, uint32_t min_size_for_splitting_to_threads = 1)
+		: enki::ITaskSet(set_size, min_size_for_splitting_to_threads)
+		, ctx(context)
+		, root(root_action)
+		, process(work)
+	{}
+			
+	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+	{
+		if (process)
+		{
+			std::string outputs = cbl::join(root->outputs, " ");
+			// Avoid JSON escape sequence issues.
+			for (auto& c : outputs) { if (c == '\\') c = '/'; }
+			cbl::info("%s", ("Building " + outputs).c_str());
+			MTR_SCOPE_S(__FILE__, "Build task", "outputs", outputs.c_str());
+			auto spawned = process();
+			if (spawned)
+			{
+				exit_code = spawned->wait();
+				if (exit_code != 0 && g_options.fatal_errors.val.as_bool)
+					cbl::fatal(exit_code, "Building %s failed with code %d", outputs.c_str(), exit_code);
+			}
+		}
+	}
+};
+
+class build_task_with_deps : public build_task
+{
+protected:
+	void dispatch_subtasks_and_wait()
 	{
 		MTR_SCOPE_FUNC();
-		std::shared_ptr<cpp_action> root = std::make_shared<cpp_action>();
-		root->type = (action::action_type)cpp_action::link;
-		auto sources = target.second.sources();
-		root->outputs.push_back(target.second.output);
+		// FIXME: Creating a ton of task sets is excessive, we should create one task set and feed it arrays instead.
+		std::vector<std::shared_ptr<enki::ITaskSet>> subtasks;
+		subtasks.reserve(root->inputs.size());
+		for (auto i : root->inputs)
+		{
+			if (auto subtask = enqueue_build_tasks(ctx, i))
+				subtasks.push_back(subtask);
+		}
+		// Issue the subtasks.
+		for (auto& t : subtasks)
+			cbl::scheduler.AddTaskSetToPipe(t.get());
+		// Wait for them to complete.
+		int dep_exit_code = 0;
+		for (auto& t : subtasks)
+		{
+			cbl::scheduler.WaitforTask(t.get());
+			// Propagate the first non-success exit code.
+			if (dep_exit_code == 0)
+				dep_exit_code = std::static_pointer_cast<build_task_with_deps>(t)->exit_code;
+		}
+		exit_code = dep_exit_code;
+	}
+
+public:
+	build_task_with_deps(build_context &context, std::shared_ptr<graph::action> root_action, cbl::deferred_process work = nullptr)
+		: build_task(context, root_action, work, 1)
+	{}
+
+	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+	{
+		dispatch_subtasks_and_wait();
+		if (exit_code == 0)
+			// Dependencies ran correctly, run our own stuff.
+			build_task::ExecuteRange(range, threadnum);
+	}
+};
+
+class compile_task : public build_task
+{
+public:
+	compile_task(build_context& context, std::shared_ptr<graph::cpp_action> root)
+		: build_task(context, root, context.tc.schedule_compiler(context, root->response_file.c_str()))
+	{}
+
+	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+	{
+		MTR_SCOPE(__FILE__, "Compile");
+
+		assert(root->outputs.size() == 1);
+		assert(root->inputs.size() == 1);
+		auto i = root->inputs[0];
+		assert(i->outputs.size() == 1);
+		assert(i->type == (action::action_type)cpp_action::source);
+
+		// FIXME: Find a more appropriate place for this mkdir.
+		cbl::fs::mkdir(cbl::path::get_directory(root->outputs[0].c_str()).c_str(), true);
+				
+		build_task::ExecuteRange(range, threadnum);
+	}
+};
+
+class link_task : public build_task_with_deps
+{
+public:
+	link_task(build_context &context, std::shared_ptr<graph::cpp_action> root)
+		: build_task_with_deps(context, root)
+	{
+		string_vector inputs;
+		for (auto i : root->inputs)
+		{
+			assert(i->type == (action::action_type)cpp_action::compile);
+			inputs.insert(inputs.begin(), i->outputs.begin(), i->outputs.end());
+		}
+		process = context.tc.schedule_linker(context, root->response_file.c_str());
+	}
+
+	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+	{
+		MTR_SCOPE(__FILE__, "Link");
+		build_task_with_deps::ExecuteRange(range, threadnum);
+	}
+};
+
+class generate_task : public build_task_with_deps
+{
+public:
+	using build_task_with_deps::build_task_with_deps;
+
+	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+	{
+		// Only run subtasks.
+		// TODO: Revise this if we ever need to actually spawn a process here.
+		dispatch_subtasks_and_wait();
+	}
+};
+
+task_set_ptr enqueue_build_tasks(build_context &ctx, std::shared_ptr<graph::action> root)
+{
+	MTR_SCOPE_FUNC();
+	if (!root)
+	{
+		// Empty graph, nothing to build.
+		return 0;
+	}
+	if (root->inputs.empty())
+	{
+		// This action is built and is probably a dependency up the tree.
+		return 0;
+	}
+	switch (root->type)
+	{
+	case cpp_action::link:
+		assert(root->type == graph::cpp_action::link);
+		return std::make_shared<link_task>(ctx, std::static_pointer_cast<graph::cpp_action>(root));
+	case cpp_action::compile:
+		assert(root->type == graph::cpp_action::compile);
+		return std::make_shared<compile_task>(ctx, std::static_pointer_cast<graph::cpp_action>(root));
+	default:
+		assert(!"Unimplmented");
+		break;
+	}
+	return nullptr;
+}
+
+union magic
+{
+	char c[4];
+	uint32_t i;
+};
+
+static constexpr magic cache_magic = { 'C', 'B', 'T', 'C' };
+// Increment this counter every time the cache binary format changes. 
+static constexpr uint32_t cache_version = 2;
+
+typedef size_t(*serializer)(void *ptr, size_t size, size_t nmemb, FILE *stream);
+
+static inline size_t fwrite_wrapper(void *ptr, size_t size, size_t nmemb, FILE *stream)
+{
+	return fwrite(const_cast<void*>(ptr), size, nmemb, stream);
+};
+
+template <serializer serializer, void(* on_success)(const timestamp_cache_key &key, const char *path, uint64_t stamp) = nullptr>
+static void serialize_cache_items(timestamp_cache& cache, FILE *stream)
+{
+	MTR_SCOPE_FUNC();
+	magic m = cache_magic;
+	std::hash<std::string> hasher;
+	if (1 == serializer(&m, sizeof(m), 1, stream) && m.i == cache_magic.i)
+	{
+		const uint64_t expected_version = ((uint64_t)cache_version << 32) | (uint64_t)cbl::get_host_platform();
+		uint64_t v = expected_version;
+		if (1 == serializer(&v, sizeof(v), 1, stream) && v == expected_version)
+		{
+			uint32_t length;
+			auto key_it = cache.begin();
+			std::string str;
+			timestamp_cache_key key;
+			uint64_t stamp;
+
+			auto serialize_str = [stream](std::string& str) -> bool
+			{
+				uint32_t length = str.length();
+				bool success = (1 == serializer(&length, sizeof(length), 1, stream));
+				if (success)
+				{
+					str.resize(length);
+					success = length == serializer(const_cast<char *>(str.data()), 1, length, stream);
+					if (success)
+					{
+						str.push_back(0);
+						str.resize(length);
+					}
+				}
+				return success;
+			};
+
+			size_t key_count = cache.size();
+			if (1 == serializer(&key_count, sizeof(key_count), 1, stream))
+			{
+				bool success;
+				do
+				{
+					if (key_it != cache.end())
+					{
+						key = key_it++->first;
+					}
+					success = serialize_str(key.first) && serialize_str(key.second);
+					if (success)
+					{
+						auto& vec = cache[key];
+						length = vec.size();
+						success = 1 == serializer(&length, sizeof(length), 1, stream);
+						if (success)
+						{
+							vec.resize(length);
+							for (uint32_t i = 0; success && i < length; ++i)
+							{
+								success = serialize_str(vec[i].first);
+								if (success)
+								{
+									success = 1 == serializer(&vec[i].second, sizeof(vec[i].second), 1, stream);
+									if (success)
+									{
+										if (on_success)
+											on_success(key, vec[i].first.c_str(), vec[i].second);
+									}
+									else
+										cbl::log_debug("[CacheSer] Failed to serialize value time stamp at index %d, key %s@%x", i, key.first.c_str(), hasher(key.second));
+								}
+								else
+									cbl::log_debug("[CacheSer] Failed to serialize value string at index %d, key %s@%x", i, key.first.c_str(), hasher(key.second));
+							}
+						}
+						else
+							cbl::log_debug("[CacheSer] Failed to serialize value vector length for key %s@%x", key.first.c_str(), hasher(key.second));
+					}
+					else
+						cbl::log_debug("[CacheSer] Failed to serialize key string");
+					if (key_count-- <= 1)
+						break;
+				} while (success);
+			}
+			else
+				cbl::log_debug("[CacheSer] Failed to read cache key count");
+		}
+		else
+			cbl::log_debug("[CacheSer] Version number mismatch (expected %d, got %d)", cache_version, v);
+	}
+	else
+		cbl::log_debug("[CacheSer] Magic number mismatch (expected %08X, got %08X)", cache_magic.i, m.i);
+}
+
+static std::string get_cache_path(const target &target, const configuration& cfg)
+{
+	using namespace cbl;
+	using namespace cbl::path;
+	return join(get_cppbuild_cache_path(), join(get_platform_str(cfg.second.platform), join(target.first, "timestamps.bin")));
+}
+
+static std::unordered_map<cache_map_key, timestamp_cache> cache_map;
+static std::mutex cache_mutex;
+
+static timestamp_cache& find_or_create_cache(const target &target, const configuration& cfg)
+{
+	MTR_SCOPE_FUNC();
+	using namespace cbl;
+
+	MTR_BEGIN(__FILE__, "find_or_create mutex");
+	std::lock_guard<std::mutex> _(cache_mutex);
+	MTR_END(__FILE__, "find_or_create mutex");
+
+	auto key = std::make_pair(target, cfg);
+	auto it = cache_map.find(key);
+	if (it == cache_map.end())
+	{
+		timestamp_cache& cache = cache_map[key];
+		std::string cache_path = get_cache_path(target, cfg);
+		if (FILE *serialized = fopen(cache_path.c_str(), "rb"))
+		{
+			serialize_cache_items<fread, nullptr>(cache, serialized);
+			fclose(serialized);
+		}
+		else
+		{
+			log_verbose("Failed to open timestamp cache for reading from %s, using a blank slate", cache_path.c_str());
+		}
+		return cache;
+	}
+	return it->second;
+}
+
+static void for_each_cache(std::function<void(const cache_map_key &, timestamp_cache &)> callback)
+{
+	std::lock_guard<std::mutex> _(cache_mutex);
+	for (auto &pair : cache_map)
+	{
+		callback(pair.first, pair.second);
+	}
+}
+
+namespace graph
+{
+	std::shared_ptr<graph::action> generate_cpp_build_graph(build_context &ctx)
+	{
+		MTR_SCOPE_FUNC();
 		// Presize the array for safe parallel writes to it.
-		root->inputs.resize(sources.size());
+		decltype(action::inputs) objects;
+		auto sources = ctx.trg.second.sources();
+		objects.resize(sources.size());
 		cbl::parallel_for([&](uint32_t i)
 			{
-				MTR_SCOPE_S(__FILE__, "Generating compile action", "source", sources[i].c_str());
-				root->inputs[i] = tc->generate_compile_action_for_cpptu(target, sources[i], cfg);
+				std::string safe_source = sources[i];
+				for (auto& c : safe_source) { if (c == '\\') c = '/'; }
+				MTR_SCOPE_S(__FILE__, "Generating compile action", "source", safe_source.c_str());
+				objects[i] = ctx.tc.generate_compile_action_for_cpptu(ctx, sources[i].c_str());
 			},
 			sources.size());
-		return std::static_pointer_cast<action, cpp_action>(root);
+		return ctx.tc.generate_link_action_for_objects(ctx, objects);
 	}
 	
-	void cull_build_graph(std::shared_ptr<action>& root)
+	void cull_build_graph(build_context &ctx,
+		std::shared_ptr<graph::action>& root)
 	{
 		MTR_SCOPE_FUNC();
-		uint64_t root_timestamp = root->get_oldest_output_timestamp();
-		detail::cull_action(root, root_timestamp);
+		cull_action(ctx, root, root->get_oldest_output_timestamp());
 	}
 
-	int execute_build_graph(const target& target,
-		std::shared_ptr<action> root,
-		const configuration& cfg,
-		std::shared_ptr<toolchain> tc,
-		const cbl::pipe_output_callback& on_stderr,
-		const cbl::pipe_output_callback& on_stdout)
+	int execute_build_graph(build_context &ctx,
+		std::shared_ptr<graph::action> root)
 	{
 		MTR_SCOPE_FUNC();
-		detail::build_context ctx{ target, cfg, tc, on_stderr, on_stdout };
 		int exit_code = 0;
-		if (auto root_task = detail::enqueue_build_tasks(ctx, root))
+		if (auto root_task = enqueue_build_tasks(ctx, root))
 		{
 			cbl::scheduler.AddTaskSetToPipe(root_task.get());
 			cbl::scheduler.WaitforTask(root_task.get());
-			exit_code = std::static_pointer_cast<detail::build_task>(root_task)->exit_code;
+			exit_code = std::static_pointer_cast<build_task>(root_task)->exit_code;
 		}
 		return exit_code;
 	}
 
-	void clean_build_graph_outputs(std::shared_ptr<action> root)
+	void clean_build_graph_outputs(build_context &ctx, 
+		std::shared_ptr<graph::action> root)
 	{
 		MTR_SCOPE_FUNC();
 		if (!root)
@@ -435,7 +606,7 @@ namespace graph
 			}
 			for (auto& i : root->inputs)
 			{
-				clean_build_graph_outputs(i);
+				clean_build_graph_outputs(ctx, i);
 			}
 		}
 	}
@@ -487,179 +658,22 @@ namespace graph
 		}
 	}
 
-	namespace detail
-	{
-		union magic
-		{
-			char c[4];
-			uint32_t i;
-		};
-
-		static constexpr magic cache_magic = { 'C', 'B', 'T', 'C' };
-		// Increment this counter every time the cache binary format changes. 
-		static constexpr uint32_t cache_version = 0;
-
-		typedef size_t(*serializer)(void *ptr, size_t size, size_t nmemb, FILE *stream);
-
-		inline size_t fwrite_wrapper(void *ptr, size_t size, size_t nmemb, FILE *stream)
-		{
-			return fwrite(const_cast<void*>(ptr), size, nmemb, stream);
-		};
-
-		template <serializer serializer, void(* on_success)(const char *key, const char *path, uint64_t stamp) = nullptr>
-		void serialize_cache_items(timestamp_cache& cache, FILE *stream)
-		{
-			MTR_SCOPE_FUNC();
-			magic m = cache_magic;
-			if (1 == serializer(&m, sizeof(m), 1, stream) && m.i == cache_magic.i)
-			{
-				const uint64_t expected_version = ((uint64_t)cache_version << 32) | (uint64_t)cbl::get_host_platform();
-				uint64_t v = expected_version;
-				if (1 == serializer(&v, sizeof(v), 1, stream) && v == expected_version)
-				{
-					uint32_t length;
-					auto key_it = cache.begin();
-					std::string str, key;
-					uint64_t stamp;
-
-					auto serialize_str = [stream](std::string& str) -> bool
-					{
-						uint32_t length = str.length();
-						bool success = (1 == serializer(&length, sizeof(length), 1, stream));
-						if (success)
-						{
-							str.resize(length);
-							success = length == serializer(const_cast<char *>(str.data()), 1, length, stream);
-							if (success)
-							{
-								str.push_back(0);
-								str.resize(length);
-							}
-						}
-						return success;
-					};
-
-					size_t key_count = cache.size();
-					if (1 == serializer(&key_count, sizeof(key_count), 1, stream))
-					{
-						bool success;
-						do
-						{
-							if (key_it != cache.end())
-							{
-								key = key_it++->first;
-							}
-							success = serialize_str(key);
-							if (success)
-							{
-								auto& vec = cache[key];
-								length = vec.size();
-								success = 1 == serializer(&length, sizeof(length), 1, stream);
-								if (success)
-								{
-									vec.resize(length);
-									for (uint32_t i = 0; success && i < length; ++i)
-									{
-										success = serialize_str(vec[i].first);
-										if (success)
-										{
-											success = 1 == serializer(&vec[i].second, sizeof(vec[i].second), 1, stream);
-											if (success)
-											{
-												if (on_success)
-													on_success(key.c_str(), vec[i].first.c_str(), vec[i].second);
-											}
-											else
-												cbl::log_debug("[CacheSer] Failed to serialize value time stamp at index %d, key %s", i, key.c_str());
-										}
-										else
-											cbl::log_debug("[CacheSer] Failed to serialize value string at index %d, key %s", i, key.c_str());
-									}
-								}
-								else
-									cbl::log_debug("[CacheSer] Failed to serialize value vector length for key %s", key.c_str());
-							}
-							else
-								cbl::log_debug("[CacheSer] Failed to serialize key string");
-							if (key_count-- <= 1)
-								break;
-						} while (success);
-					}
-					else
-						cbl::log_debug("[CacheSer] Failed to read cache key count");
-				}
-				else
-					cbl::log_debug("[CacheSer] Version number mismatch (expected %d, got %d)", cache_version, v);
-			}
-			else
-				cbl::log_debug("[CacheSer] Magic number mismatch (expected %08X, got %08X)", cache_magic.i, m.i);
-		}
-
-		std::string get_cache_path(const target &target, const configuration& cfg)
-		{
-			using namespace cbl;
-			using namespace cbl::path;
-			return join(get_cppbuild_cache_path(), join(get_platform_str(cfg.second.platform), join(target.first, "timestamps.bin")));
-		}
-
-		static std::unordered_map<cache_map_key, timestamp_cache> cache_map;
-		static std::mutex cache_mutex;
-
-		timestamp_cache& find_or_create_cache(const target &target, const configuration& cfg)
-		{
-			MTR_SCOPE_FUNC();
-			using namespace cbl;
-
-			MTR_BEGIN(__FILE__, "find_or_create mutex");
-			std::lock_guard<std::mutex> _(cache_mutex);
-			MTR_END(__FILE__, "find_or_create mutex");
-
-			auto key = std::make_pair(target, cfg);
-			auto it = cache_map.find(key);
-			if (it == cache_map.end())
-			{
-				timestamp_cache& cache = cache_map[key];
-				std::string cache_path = get_cache_path(target, cfg);
-				if (FILE *serialized = fopen(cache_path.c_str(), "rb"))
-				{
-					detail::serialize_cache_items<fread, nullptr>(cache, serialized);
-					fclose(serialized);
-				}
-				else
-				{
-					log_verbose("Failed to open timestamp cache for reading from %s, using a blank slate", cache_path.c_str());
-				}
-				return cache;
-			}
-			return it->second;
-		}
-
-		void for_each_cache(std::function<void(const cache_map_key &, timestamp_cache &)> callback)
-		{
-			std::lock_guard<std::mutex> _(cache_mutex);
-			for (auto &pair : cache_map)
-			{
-				callback(pair.first, pair.second);
-			}
-		}
-	};
-
 	void save_timestamp_caches()
 	{
 		MTR_SCOPE_FUNC();
 
 		using namespace cbl;
 
-		detail::for_each_cache([](const detail::cache_map_key &key, timestamp_cache &cache)
+		for_each_cache([](const cache_map_key &key, timestamp_cache &cache)
 		{
-			std::string cache_path = detail::get_cache_path(key.first, key.second);
+			std::string cache_path = get_cache_path(key.first, key.second);
 			fs::mkdir(path::get_directory(cache_path.c_str()).c_str(), true);
 			MTR_BEGIN(__FILE__, "fopen");
 			FILE *serialized = fopen(cache_path.c_str(), "wb");
 			MTR_END(__FILE__, "fopen");
 			if (serialized)
 			{
-				detail::serialize_cache_items<detail::fwrite_wrapper, nullptr>(cache, serialized);
+				serialize_cache_items<fwrite_wrapper, nullptr>(cache, serialized);
 				MTR_SCOPE(__FILE__, "fclose");
 				fclose(serialized);
 			}
@@ -670,13 +684,17 @@ namespace graph
 		});
 	}
 
-	bool query_dependency_cache(const target &target, const configuration& cfg, const std::string& source, std::function<void(const std::string &)> push_dep)
+	bool query_dependency_cache(build_context &ctx,
+		const std::string& source,
+		const char *response,
+		std::function<void(const std::string &)> push_dep)
 	{
 		MTR_SCOPE_FUNC();
 
-		auto& cache = detail::find_or_create_cache(target, cfg);
-
-		auto it = cache.find(source);
+		auto& cache = find_or_create_cache(ctx.trg, ctx.cfg);
+		
+		const auto key = timestamp_cache_key{ source, response };
+		auto it = cache.find(key);
 		if (it != cache.end())
 		{
 			bool up_to_date = true;
@@ -687,7 +705,7 @@ namespace graph
 				uint64_t stamp = cbl::fs::get_modification_timestamp(entry.first.c_str());
 				if (stamp == 0 || stamp != entry.second)
 				{
-					cbl::log_verbose("Outdated time stamp for dependency %s (%" PRId64 " vs %" PRId64 ")", entry.first.c_str(), stamp, entry.second);
+					cbl::log_verbose("Outdated time stamp for dependency %s (%" PRId64 " vs %" PRId64 ") of %s", entry.first.c_str(), stamp, entry.second, source.c_str());
 					up_to_date = false;
 				}
 			},
@@ -714,12 +732,16 @@ namespace graph
 		return false;
 	}
 
-	void insert_dependency_cache(const target &target, const configuration& cfg, const std::string& source, const graph::dependency_timestamp_vector &deps)
+	void insert_dependency_cache(build_context &ctx,
+		const std::string& source,
+		const char *response,
+		const dependency_timestamp_vector &deps)
 	{
 		MTR_SCOPE_FUNC();
 
-		auto& cache = detail::find_or_create_cache(target, cfg);
+		auto& cache = find_or_create_cache(ctx.trg, ctx.cfg);
 
-		cache[source] = deps;
+		const auto key = timestamp_cache_key{ source, response };
+		cache[key] = deps;
 	}
 };

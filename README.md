@@ -1,6 +1,6 @@
 # cppbuild
 
-A toy self-hosting build system for C++, written in C++11.
+A toy self-hosting build system for C++, written in C++14.
 
 Inspired in equal parts by the frustration with existing C++ build systems, as well as conversations with colleagues at work.
 

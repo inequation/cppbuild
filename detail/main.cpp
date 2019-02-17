@@ -24,9 +24,9 @@ void dump_builds(const target_map& t, const configuration_map& c)
 		dump << "\t}\n";
 	}
 
-	constexpr const char *platforms[] = { "Windows 64-bit", "Linux 64-bit", "macOS", "PS4", "Xbox One" };
+	constexpr const char *platforms[] = { "Windows 64-bit", "Linux 64-bit" };
 	constexpr const char *booleans[] = { "false", "true" };
-	static_assert(sizeof(platforms) / sizeof(platforms[0]) - 1 == (size_t)platform::xbox1, "Missing string for platform");
+	static_assert(sizeof(platforms) / sizeof(platforms[0]) == size_t(platform::platform_count), "Missing string for platform");
 	
 	dump << "Available configurations:\n";
 	for (auto cfg : c)
@@ -58,12 +58,7 @@ void dump_builds(const target_map& t, const configuration_map& c)
 			"\t\t{\n";
 		for (auto& t : cfg.second.additional_toolchain_options)
 		{
-			dump << "\t\t\t\"" << t.first << "\" =\n"
-				"\t\t\t{";
-			for (auto& o : t.second)
-			{
-				dump << "\t\t\t\t\"" << o << "\"\n";
-			}
+			dump << "\t\t\t\"" << t.first << "\": \"" << t.second << "\"\n";
 		}
 		dump << "\t\t}\n"
 			"\t}\n";
@@ -95,9 +90,8 @@ namespace detail
 			"Compile",
 			"Source",
 			"Include",
-			"Generate"
 		};
-		static_assert(sizeof(types) / sizeof(types[0]) == graph::action::cpp_actions_end, "Missing string for action type");
+		static_assert(sizeof(types) / sizeof(types[0]) == graph::action::custom_actions_begin - 1, "Missing string for action type");
 		dump << tabs << types[action->type] << '\n';
 		dump << tabs << "{\n";
 		tabs += tab;
@@ -130,7 +124,7 @@ void dump_graph(std::shared_ptr<graph::action> root)
 	cbl::info("Dumping build graph:\n%s", dump.str().c_str());
 }
 
-std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_build(const target& target, const configuration& cfg, toolchain_map& toolchains, std::shared_ptr<toolchain> *out_tc = nullptr)
+std::pair<build_context, std::shared_ptr<graph::action>> setup_build(const target& target, const configuration& cfg, toolchain_map& toolchains)
 {
 	const char *used_tc = target.second.used_toolchain;
 	if (!used_tc)
@@ -143,22 +137,19 @@ std::pair<std::shared_ptr<graph::action>, std::shared_ptr<toolchain>> setup_buil
 	assert(toolchains.find(used_tc) != toolchains.end() && "Unknown toolchain");
 	auto& tc = toolchains[used_tc];
 
-	return std::make_pair(
-		graph::generate_cpp_build_graph(target, cfg, tc),
-		tc
-	);
+	build_context ctx{ target, cfg, *tc };
+	return { ctx, graph::generate_cpp_build_graph(ctx) };
 }
 
-void cull_build(std::shared_ptr<graph::action>& root)
+void cull_build(build_context& ctx, std::shared_ptr<graph::action>& root)
 {
-	// TODO: Also compare toolchain invocations, as they may easily change the output.
 	if (g_options.dump_graph.val.as_int32 > 1)
 	{
 		cbl::info("Before culling:");
 		dump_graph(std::static_pointer_cast<graph::cpp_action>(root));
 	}
 
-	graph::cull_build_graph(root);
+	graph::cull_build_graph(ctx, root);
 
 	if (g_options.dump_graph.val.as_int32 > 0)
 	{
@@ -169,11 +160,11 @@ void cull_build(std::shared_ptr<graph::action>& root)
 	graph::save_timestamp_caches();
 }
 
-int execute_build(const target& target, std::shared_ptr<graph::action> root, const configuration& cfg, std::shared_ptr<toolchain> tc)
+int execute_build(build_context& ctx, std::shared_ptr<graph::action> root)
 {
 	int exit_code = root
-		? graph::execute_build_graph(target, root, cfg, tc, nullptr, nullptr)
-		: (cbl::info("Target %s up to date", target.first.c_str()), 0);
+		? graph::execute_build_graph(ctx, root)
+		: (cbl::info("Target %s up to date", ctx.trg.first.c_str()), 0);
 		
 	cbl::info("Build finished with code %d", exit_code);
 	return exit_code;
@@ -192,7 +183,7 @@ namespace bootstrap
 			;
 
 		target_data target;
-		target.output = cppbuild;
+		target.output = path::join(path::get_cppbuild_cache_path(), "bin", cppbuild);
 		target.type = target_data::executable;
 		target.sources = []()
 		{
@@ -210,11 +201,13 @@ namespace bootstrap
 		configuration cfg;
 		cfg.first = "bootstrap";
 		cfg.second = base_configurations::debug(cbl::get_host_platform());
+		cfg.second.standard = configuration_data::Cxx14;
 		cfg.second.additional_include_directories.push_back("cppbuild");
-		cfg.second.definitions.push_back(std::make_pair("CPPBUILD_GENERATION", std::to_string(CPPBUILD_GENERATION == 0 ? 2 : (CPPBUILD_GENERATION + 1))));
 		cfg.second.definitions.push_back(std::make_pair("MTR_ENABLED", "1"));
-		cfg.second.additional_toolchain_options["msvc link"] = string_vector{ "/SUBSYSTEM:CONSOLE" };
-		cfg.second.additional_toolchain_options["gcc link"] = string_vector{ "-pthread" };
+		// cppbuild generation needs to be transient, otherwise the build-deploy loop never ends.
+		cfg.second.transient_definitions.push_back(std::make_pair("CPPBUILD_GENERATION", std::to_string(CPPBUILD_GENERATION == 0 ? 2 : (CPPBUILD_GENERATION + 1))));
+		cfg.second.additional_toolchain_options["msvc link"] += " /SUBSYSTEM:CONSOLE";
+		cfg.second.additional_toolchain_options["gcc link"] += " -pthread";
 
 		return std::make_pair(
 			std::make_pair(cppbuild, target),
@@ -230,27 +223,16 @@ namespace bootstrap
 		auto bootstrap = describe(toolchains);
 
 		auto build = setup_build(bootstrap.first, bootstrap.second, toolchains);
-#if CPPBUILD_GENERATION > 0	// Only cull the build graph once we have successfully bootstrapped.
-		cull_build(build.first);
+#if CPPBUILD_GENERATION > 0
+		// Only cull the build graph once we have successfully bootstrapped.
+		cull_build(build.first, build.second);
 #endif
 
 		std::string staging_dir = path::join(path::get_cppbuild_cache_path(), "bin");
-		if (build.first)
+		if (build.second)
 		{
-			fs::mkdir(staging_dir.c_str(), true);
-
-			// Now here comes the hack: we rename the output of the root node *only after the culling*.
-			// I.e. cull based on main cppbuild executable's timestamp, but output to a file named differently.
-			std::string new_cppbuild = path::join(staging_dir, "build-");
-			new_cppbuild += std::to_string(process::get_current_pid());
-#if defined(_WIN64)
-			new_cppbuild += ".exe";
-#endif
-			build.first->outputs[0] = new_cppbuild;
-			bootstrap.first.second.output = new_cppbuild;
-
-			time::scoped_timer _("Bootstrap outdated cppbuild executable");
-			int exit_code = execute_build(bootstrap.first, build.first, bootstrap.second, build.second);
+			time::scoped_timer _("Rebuild outdated cppbuild executable");
+			int exit_code = execute_build(build.first, build.second);
 			if (exit_code == 0)
 			{
 				MTR_SCOPE(__FILE__, "cppbuild deployment dispatch");
@@ -269,10 +251,7 @@ namespace bootstrap
 				mtr_flush();
 				auto p = cbl::process::start_async(cmdline.c_str());
 				if (!p)
-				{
-					error("FATAL: Failed to bootstrap cppbuild, command line %s", cmdline.c_str());
-					abort();
-				}
+					fatal(int(error_code::failed_bootstrap_respawn), "Failed to bootstrap cppbuild, command line %s", cmdline.c_str());
 				p->detach();
 				exit(0);
 			}
@@ -280,16 +259,13 @@ namespace bootstrap
 		}
 		else
 		{
-			MTR_SCOPE(__FILE__, "Garbage collection");
 			info("cppbuild executable up to date");
-			auto old_copies = cbl::fs::enumerate_files(cbl::path::join(staging_dir, "build-*").c_str());
-#ifdef _WIN64
-			// Don't cannibalise our own debug info!
-			cbl::win64::debug::filter_own_pdb(old_copies);
-#endif
-			for (auto& o : old_copies)
+			MTR_SCOPE(__FILE__, "Garbage collection");
+			string_vector garbage = string_vector{ "build.obj", "build.o", "build.ilk" };
+			for (auto& g : garbage)
 			{
-				cbl::fs::delete_file(o.c_str());
+				if (0 != fs::get_modification_timestamp(g.c_str()))
+					fs::delete_file(g.c_str());
 			}
 			return 0;
 		}
@@ -421,8 +397,8 @@ int main(int argc, char *argv[])
 		arguments.second = argv[first_non_opt_arg + 1];
 	}
 
-	auto target = targets.find(arguments.first);
-	if (target == targets.end())
+	auto it = targets.find(arguments.first);
+	if (it == targets.end())
 	{
 		cbl::error("Unknown target %s", arguments.first.c_str());
 		return (int)error_code::unknown_target;
@@ -434,10 +410,14 @@ int main(int argc, char *argv[])
 		return (int)error_code::unknown_configuration;
 	}
 
-	MTR_SCOPE_S(__FILE__, "Building target", "target", target->first.c_str());
-	std::string desc = "Building target " + target->first + " in configuration " + cfg->first;
+	MTR_SCOPE_S(__FILE__, "Building target", "target", it->first.c_str());
+	std::string desc = "Building target " + it->first + " in configuration " + cfg->first;
 	cbl::time::scoped_timer _(desc.c_str());
-	auto build = setup_build(*target, *cfg, toolchains);
-	cull_build(build.first);
-	return execute_build(*target, build.first, *cfg, build.second);
+
+	// Apparently, iterator does not create a reference to the item. GCC deletes the contents of targets after the call to setup_build().
+	target local_copy{ *it };
+
+	auto build = setup_build(local_copy, *cfg, toolchains);
+	cull_build(build.first, build.second);
+	return execute_build(build.first, build.second);
 }
