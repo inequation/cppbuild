@@ -409,6 +409,7 @@ namespace cbl
 
 void rotate_traces(bool append_to_current)
 {
+#if MTR_ENABLED
 	using namespace cbl;
 	using namespace cbl::detail;
 
@@ -471,6 +472,7 @@ void rotate_traces(bool append_to_current)
 	callbacks->threadStop = nullptr;
 	callbacks->waitStart = [](uint32_t thread_index) { MTR_BEGIN(__FILE__, "Wait"); };
 	callbacks->waitStop = [](uint32_t thread_index) { MTR_END(__FILE__, "Wait"); };
+#endif	// MTR_ENABLED
 }
 
 void rotate_logs(bool append_to_current)
