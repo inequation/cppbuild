@@ -43,7 +43,7 @@ int	opterr = 1,		/* if error message should be printed */
 	optind = 1,		/* index into parent argv vector */
 	optopt,			/* character checked for validity */
 	optreset;		/* reset getopt */
-const char	*optarg;		/* argument associated with option */
+char	*optarg;		/* argument associated with option */
 
 #define	BADCH	(int)'?'
 #define	BADARG	(int)':'
@@ -106,7 +106,7 @@ getopt(int nargc, char * const nargv[], const char *ostr)
 		/* Option-argument is either the rest of this argument or the
 		   entire next argument. */
 		if (*place)
-			optarg = place;
+			optarg = (char *)place;
 		else if (oli[2] == ':')
 			/*
 			 * GNU Extension, for optional arguments if the rest of
@@ -114,7 +114,7 @@ getopt(int nargc, char * const nargv[], const char *ostr)
 			 */
 			optarg = NULL;
 		else if (nargc > ++optind)
-			optarg = nargv[optind];
+			optarg = (char *)nargv[optind];
 		else {
 			/* option-argument absent */
 			place = EMSG;

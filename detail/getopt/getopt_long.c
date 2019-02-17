@@ -84,6 +84,9 @@ char    *optarg;		/* argument associated with option */
 
 /* return values */
 #define	BADCH		(int)'?'
+#ifdef BADARG
+#undef BADARG
+#endif
 #define	BADARG		((*options == ':') ? (int)':' : (int)'?')
 #define	INORDER 	(int)1
 
