@@ -40,7 +40,7 @@ void dump_builds(const target_map& t, const configuration_map& c)
 	{
 		dump << "\t" << types[target.second.type] << ' ' << target.first << ":\t\n"
 			"\t{\n";
-		auto sources = target.second.sources();
+		auto sources = target.second.enumerate_sources();
 		for (auto source : sources)
 		{
 			dump << "\t\t" << source << "\n";
@@ -91,60 +91,11 @@ void dump_builds(const target_map& t, const configuration_map& c)
 	cbl::info("Dumping described builds:\n%s", dump.str().c_str());
 }
 
-namespace detail
-{
-	void dump_action(std::ostringstream &dump, std::shared_ptr<graph::action> action, size_t indent)
-	{
-		constexpr char tab = ' ';//'\t';
-		std::string tabs;
-		for (size_t i = 0; i < indent; ++i)
-		{
-			tabs += tab;
-		}
-
-		if (!action)
-		{
-			dump << tabs << "Empty graph (up to date)";
-			return;
-		}
-
-		const char *types[] =
-		{
-			"Link",
-			"Compile",
-			"Source",
-			"Include",
-		};
-		static_assert(sizeof(types) / sizeof(types[0]) == graph::action::custom_actions_begin - 1, "Missing string for action type");
-		dump << tabs << types[action->type] << '\n';
-		dump << tabs << "{\n";
-		tabs += tab;
-		if (!action->outputs.empty())
-		{
-			dump << tabs << "Outputs:\n";
-			dump << tabs << "{\n";
-			for (const auto& s : action->outputs)
-				dump << tabs << tab << s << '\n';
-			dump << tabs << "}\n";
-		}
-		if (!action->inputs.empty())
-		{
-			dump << tabs << "Inputs:\n";
-			dump << tabs << "{\n";
-			for (const auto& i : action->inputs)
-				dump_action(dump, i, indent + 2);
-			dump << tabs << "}\n";
-		}
-		tabs.pop_back();
-		dump << tabs << "}\n";
-	}
-};
-
 void dump_graph(std::shared_ptr<graph::action> root)
 {
 	MTR_SCOPE_FUNC();
 	std::ostringstream dump;
-	detail::dump_action(dump, root, 0);
+	graph::dump_build_graph(dump, root);
 	cbl::info("Dumping build graph:\n%s", dump.str().c_str());
 }
 
@@ -209,7 +160,7 @@ namespace bootstrap
 		target_data target;
 		target.output = path::join(path::get_cppbuild_cache_path(), "bin", cppbuild);
 		target.type = target_data::executable;
-		target.sources = []()
+		target.enumerate_sources = []()
 		{
 			auto detail_path = path::join("cppbuild", "detail");
 			auto sources = fs::enumerate_files(path::join(detail_path, "*.cpp").c_str());
@@ -298,9 +249,7 @@ namespace bootstrap
 	int deploy(int argc, char *argv[], const toolchain_map& toolchains)
 	{
 		using namespace cbl;
-		std::string logged_params = g_options.bootstrap_deploy.val.as_str_ptr;
-		// Avoid JSON escape sequence issues.
-		for (auto& c : logged_params) { if (c == '\\') c = '/'; }
+		std::string logged_params = cbl::jsonify(g_options.bootstrap_deploy.val.as_str_ptr);
 		MTR_SCOPE_FUNC_S("Deployment params", logged_params.c_str());
 
 		// Finish the bootstrap deployment:
@@ -310,16 +259,24 @@ namespace bootstrap
 		{
 			// Params' format: <parent pid>,<original cppbuild executable>,<toolchain used>
 			uint32_t parent_pid = atoi(params[0].c_str());
-			process::wait_for_pid(parent_pid);
+			{
+				MTR_SCOPE(__FILE__, "Waiting for parent");
+				process::wait_for_pid(parent_pid);
+			}
 			auto it = toolchains.find(params[2].c_str());
 			if (it == toolchains.end())
 			{
 				return (int)error_code::failed_bootstrap_bad_toolchain;
 			}
 			std::shared_ptr<toolchain> tc = it->second;
-			if (tc->deploy_executable_with_debug_symbols(
-				process::get_current_executable_path().c_str(),
-				params[1].c_str()))
+			bool success;
+			{
+				MTR_SCOPE(__FILE__, "Deployment");
+				success = tc->deploy_executable_with_debug_symbols(
+					process::get_current_executable_path().c_str(),
+					params[1].c_str());
+			}
+			if (success)
 			{
 				info("Successful bootstrap deployment");
 				std::string cmdline = params[1];
@@ -329,6 +286,7 @@ namespace bootstrap
 					cmdline += ' ';
 					cmdline += argv[i];
 				}
+				MTR_SCOPE(__FILE__, "Respawning");
 				auto p = process::start_async(cmdline.c_str());
 				if (p)
 				{

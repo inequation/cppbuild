@@ -195,8 +195,7 @@ void msvc::generate_dependency_actions_for_cpptu(
 	};
 
 	// Avoid JSON escape sequence issues.
-	std::string safe_source = source;
-	for (auto& c : safe_source) { if (c == '\\') c = '/'; }
+	std::string safe_source = cbl::jsonify(source);
 	MTR_SCOPE_S(__FILE__, "Dependency scan", "source", safe_source.c_str());
 	int exit_code = cbl::process::start_sync(cmdline.c_str(), append_to_buffer, [](const void *, size_t) {});
 	if (exit_code == 0)

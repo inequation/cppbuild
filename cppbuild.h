@@ -24,8 +24,8 @@ SOFTWARE.
 
 #pragma once
 
-#if __cplusplus < 201103L && (!defined(_MSC_VER) || _MSC_VER < 1900)
-	#error C++11 is required by cppbuild
+#if __cplusplus < 201402L && (!defined(_MSC_VER) || _MSC_VER < 1900)
+	#error C++14 is required by cppbuild
 #endif
 
 #ifndef CPPBUILD_GENERATION
@@ -35,6 +35,7 @@ SOFTWARE.
 #include <string>
 #include <functional>
 #include <algorithm>
+#include <atomic>
 #include <unordered_map>
 #include <vector>
 #include <memory>
@@ -105,6 +106,8 @@ namespace graph
 	struct action;
 	struct cpp_action;
 	using action_vector = std::vector<std::shared_ptr<action>>;
+	bool operator==(const action_vector &a, const action_vector &b);
+	inline bool operator!=(const action_vector &a, const action_vector &b) { return !operator==(a, b); }
 };
 namespace cbl
 {
@@ -122,18 +125,17 @@ struct target_data
 		dynamic_library
 	} type;
 
-	const char *used_toolchain = nullptr;
+	// Required: name of the target output. Unless `custom_extension` is specified, cppbuild will append platform-default extension.
 	std::string output;
-	std::function<string_vector()> sources;
+	// Required: callback for enumerating source files.
+	std::function<string_vector()> enumerate_sources;
 
-	target_data() = default;
-
-	target_data(target_type in_type, const char *in_output, std::function<string_vector()> in_sources, const char *in_toolchain = nullptr)
-		: type(in_type)
-		, output(in_output)
-		, used_toolchain(in_toolchain)
-		, sources(in_sources)
-	{}
+	// Optional: override toolchain selection. Otherwise, cppbuild chooses the default for the configuration's platform.
+	const char *used_toolchain = nullptr;
+	// Optional: provide a callback to manipulate the build graph after enumerating source files, but before culling.
+	std::function<void(std::shared_ptr<graph::action> root)> generate_graph_hook;
+	// Optional: provide a callback to manipulate the build graph after culling. Return true to invoke another pass of cpppbuild culling, false otherwise.
+	std::function<bool(std::shared_ptr<graph::action> root)> cull_graph_hook;
 };
 typedef std::unordered_map<std::string, target_data> target_map;
 typedef std::pair<std::string, target_data> target;
@@ -211,6 +213,17 @@ struct build_context
 	const configuration &cfg;
 	toolchain &tc;
 };
+struct cull_context
+{
+	std::atomic_uint64_t self_timestamp;
+	const uint64_t root_timestamp;
+
+	// Old-school workaround for GCC insisting on selecting the std::atomic<long unsigned int>::atomic(const std::atomic<long unsigned int>&) constructor in the aggregate initializer.
+	cull_context(uint64_t self_timestamp_, const uint64_t root_timestamp_)
+		: self_timestamp(self_timestamp_)
+		, root_timestamp(root_timestamp_)
+	{}
+};
 
 //=============================================================================
 
@@ -230,11 +243,16 @@ namespace graph
 		} type;
 		action_vector inputs;
 		string_vector outputs;
-		std::vector<uint64_t> output_timestamps;
+		mutable std::vector<uint64_t> output_timestamps;
 
 		virtual bool are_dependencies_met() = 0;
-		virtual uint64_t get_oldest_output_timestamp();
-		void update_output_timestamps();
+		virtual uint64_t get_oldest_output_timestamp() const;
+		void update_output_timestamps() const;
+		std::shared_ptr<action> clone() const;
+		bool operator==(action &) const;
+	protected:
+		virtual std::shared_ptr<action> internal_clone() const = 0;
+		virtual bool internal_is_equivalent(action &) const = 0;
 	};
 
 	struct cpp_action : public action
@@ -251,6 +269,9 @@ namespace graph
 		std::string response_file;
 
 		bool are_dependencies_met() override;
+	protected:
+		virtual std::shared_ptr<action> internal_clone() const override;
+		virtual bool internal_is_equivalent(action&) const override;
 	};
 
 	using dependency_timestamp_vector = std::vector<std::pair<std::string, uint64_t>>;
@@ -271,6 +292,20 @@ namespace graph
 		std::shared_ptr<action> root);
 	void clean_build_graph_outputs(build_context &,
 		std::shared_ptr<action> root);
+	void dump_build_graph(std::ostringstream& dump,
+		std::shared_ptr<graph::action> root);
+
+	/// Signature of an action cull test handler. Returns the answer to the question, "should the action be culled?",
+	/// and may also perform culling of its inputs (i.e. modify the `inputs` array) as needed (e.g. a C++ link
+	/// action will cull up-to-date object files to test whether it's up to date).
+	/// The graph should be walked breadth-first in parallel, starting from the root.
+	using action_cull_test_handler = bool (*)(build_context &, cull_context &, action &);
+	/// Signature of an action executor. Returns the exit code (0 is success, anything non-zero is treated as error).
+	using action_execute_handler = int (*)(build_context &, const action &);
+	/// Registers handlers for a given custom action type. A handler may be nullptr, but keep in mind:
+	/// - if cull test handler is nullptr, the action will be treated as always requiring build,
+	/// - if execution handler is nullptr, the action will not spawn a task.
+	void register_action_handlers(action::action_type, action_cull_test_handler, action_execute_handler);
 };
 
 //=============================================================================

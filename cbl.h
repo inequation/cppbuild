@@ -234,6 +234,11 @@ namespace cbl
 
 	// Removes whitespace (any character for which std::isspace() returns true) at both ends of the string.
 	void trim(std::string& s);
+	// Replaces all backslashes in place with forward slashes. Useful for safely outputting paths in JSON (i.e. minitrace macros). Returns `s` for chaining.
+	std::string& jsonify(std::string& s);
+	std::string jsonify(const std::string& s);
+	std::string&& jsonify(std::string&& s);
+	std::string jsonify(char *s);
 
 	// Concatenates the string using the specified glue string.
 	std::string join(const string_vector& v, const char *glue);

@@ -33,7 +33,9 @@ enum class error_code : int
 	// This is high enough to avoid collisions with system error codes (Windows in particular; see https://docs.microsoft.com/en-us/windows/desktop/debug/system-error-codes).
 	first_cppbuild_code = 16000,
 
-	failed_bootstrap_build = first_cppbuild_code,
+	unknown_cppbuild_error = first_cppbuild_code,
+
+	failed_bootstrap_build,
 	failed_bootstrap_bad_toolchain,
 	failed_bootstrap_deployment,
 	failed_bootstrap_respawn,
@@ -42,6 +44,7 @@ enum class error_code : int
 	unknown_configuration,
 
 	failed_writing_response_file,
+	failed_launching_compiler_process,
 };
 
 namespace cppbuild

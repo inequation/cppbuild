@@ -27,7 +27,7 @@ SOFTWARE.
 #include "detail.h"
 
 #include <mutex>
-#include <atomic>
+#include <sstream>
 
 using namespace graph;
 
@@ -73,23 +73,9 @@ static inline void atomic_max(std::atomic<T>& max, T const& value) noexcept
 	while (prev_value < value && !max.compare_exchange_weak(prev_value, value));
 }
 
-struct input_cull_context
+static inline void cull_input(cull_context &ctx, graph::action &action, std::shared_ptr<graph::action> &input, uint64_t stamp_if_missing = 0)
 {
-	graph::action *action;
-	std::atomic_uint64_t self_timestamp;
-	const uint64_t root_timestamp;
-
-	// Old-school workaround for GCC insisting on selecting the std::atomic<long unsigned int>::atomic(const std::atomic<long unsigned int>&) constructor in the aggregate initializer.
-	input_cull_context(graph::action *action_, uint64_t self_timestamp_, const uint64_t root_timestamp_)
-		: action(action_)
-		, self_timestamp(self_timestamp_)
-		, root_timestamp(root_timestamp_)
-	{}
-};
-
-static inline void cull_input(input_cull_context &ctx, std::shared_ptr<graph::action> &input, uint64_t stamp_if_missing = 0)
-{
-	MTR_SCOPE_FUNC();
+	MTR_SCOPE_FUNC_S("input->outputs[0]", input && input->outputs.size() > 0 ? cbl::jsonify(input->outputs[0].c_str()).c_str() : "already culled");
 	uint64_t input_timestamp = input ? input->get_oldest_output_timestamp() : stamp_if_missing;
 	
 	const bool input_exists = input_timestamp > 0;
@@ -101,13 +87,13 @@ static inline void cull_input(input_cull_context &ctx, std::shared_ptr<graph::ac
 	{
 		if (input)
 			cbl::log_debug("Culling INPUT type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
-				input->type, input->outputs[0].c_str(), ctx.action->outputs[0].c_str(), ctx.self_timestamp.load(), input_timestamp, ctx.root_timestamp);
+				input->type, input->outputs[0].c_str(), action.outputs[0].c_str(), ctx.self_timestamp.load(), input_timestamp, ctx.root_timestamp);
 		input = nullptr;
 	}
 	else
 	{
 		cbl::log_debug("Bumping self timestamp from input type %d %s for action %s (self stamp %" PRId64 ", input stamp %" PRId64 ", root stamp %" PRId64 ")",
-			input->type, input->outputs[0].c_str(), ctx.action->outputs[0].c_str(), ctx.self_timestamp.load(), input_timestamp, ctx.root_timestamp);
+			input->type, input->outputs[0].c_str(), action.outputs[0].c_str(), ctx.self_timestamp.load(), input_timestamp, ctx.root_timestamp);
 		// Keep own timestamp up to date with inputs.
 		if (input_timestamp == 0 || ctx.self_timestamp == 0)
 			ctx.self_timestamp = 0;
@@ -127,7 +113,243 @@ static void prune_inputs(graph::action_vector &inputs)
 	inputs.shrink_to_fit();
 };
 
-static void cull_action(build_context &bctx, std::shared_ptr<graph::action>& action, uint64_t root_timestamp)
+template<bool is_linking>
+static bool internal_cull_cpp_action(build_context &bctx, cull_context &ictx, cpp_action &action)
+{
+	/*uint64_t root_timestamp = action.get_oldest_output_timestamp();
+	cull_context ictx{ root_timestamp, root_timestamp };*/
+
+	const auto rf_path = action.response_file.c_str();
+	const auto rf_timestamp = cbl::fs::get_modification_timestamp(rf_path);
+	if (ictx.self_timestamp < rf_timestamp)
+	{
+		// Response file is newer, which means that compilation flags have changed.
+		cbl::log_debug("Response file newer than product for ACTION type %d %s (%d inputs remaining; self=%" PRIu64 ", rf=%" PRIu64 ")", action.type, action.outputs[0].c_str(), action.inputs.size(), ictx.self_timestamp.load(), rf_timestamp);
+		ictx.self_timestamp = rf_timestamp;
+	}
+	else
+	{
+		decltype(action.inputs) backup_inputs;
+		if (is_linking)
+		{
+			// For linking, if any input remains at all, we need to link all of them.
+			backup_inputs.insert(backup_inputs.begin(), action.inputs.begin(), action.inputs.end());
+		}
+
+		// Breadth-first parallel culling of dependencies.
+		cbl::parallel_for([&](uint32_t i)
+		{
+			auto& input = action.inputs[i];
+			cull_action(bctx, input, ictx.root_timestamp);
+			cull_input(ictx, action, input, ~0u);
+		},
+			action.inputs.size(), 1);
+		prune_inputs(action.inputs);
+
+		if (is_linking && !action.inputs.empty() && action.inputs.size() < backup_inputs.size())
+		{
+			for (auto &bi : backup_inputs)
+			{
+				auto predicate = [&bi](const std::shared_ptr<graph::action> &in)
+				{
+					if (in->outputs.size() == bi->outputs.size())
+					{
+						for (size_t i = 0; i < in->outputs.size(); ++i)
+						{
+							// We can test for identity because the backup is a clone.
+							if (in->outputs[i] != bi->outputs[i])
+								return false;
+						}
+						return true;
+					}
+					return false;
+				};
+				if (action.inputs.end() == std::find_if(action.inputs.begin(), action.inputs.end(), predicate))
+				{
+					// We don't need to build the object, but we need to consume it.
+					bi->inputs.clear();
+					action.inputs.push_back(bi);
+				}
+			}
+		}
+	}
+
+	if (action.inputs.empty() && ictx.root_timestamp != 0)
+	{
+		cbl::log_debug("Culling ACTION type %d %s (%d inputs remaining)", action.type, action.outputs[0].c_str(), action.inputs.size());
+		return true;
+	}
+	else
+	{
+		action.output_timestamps[0] = ictx.self_timestamp;
+		return false;
+	}
+}
+
+static int internal_exec_cpp_action(cbl::deferred_process process, const action &action)
+{
+	if (process)
+	{
+		std::string outputs = cbl::jsonify(cbl::join(action.outputs, " "));
+		cbl::info("%s", ("Building " + outputs).c_str());
+		MTR_SCOPE_FUNC_S("outputs", outputs.c_str());
+		if (auto spawned = process())
+		{
+			int exit_code = spawned->wait();
+			if (exit_code != 0 && g_options.fatal_errors.val.as_bool)
+				cbl::fatal(exit_code, "Building %s failed with code %d", outputs.c_str(), exit_code);
+			return exit_code;
+		}
+	}
+	return (int)error_code::failed_launching_compiler_process;
+}
+
+static bool cull_test_link(build_context &context, cull_context &ictx, action &action)
+{
+	return internal_cull_cpp_action<true>(context, ictx, static_cast<cpp_action &>(action));
+}
+
+static int exec_link(build_context &context, const action &action)
+{
+	const auto& as_cpp_action = static_cast<const cpp_action&>(action);
+	MTR_SCOPE_FUNC_S("response_file", cbl::jsonify(as_cpp_action.response_file.c_str()).c_str());
+
+	return internal_exec_cpp_action(context.tc.schedule_linker(context, as_cpp_action.response_file.c_str()), action);
+}
+
+static bool cull_test_compile(build_context &context, cull_context &ictx, action &action)
+{
+	return internal_cull_cpp_action<false>(context, ictx, static_cast<cpp_action &>(action));
+}
+
+static int exec_compile(build_context &context, const action &action)
+{
+	const auto& as_cpp_action = static_cast<const cpp_action&>(action);
+	MTR_SCOPE_FUNC_S("response_file", cbl::jsonify(as_cpp_action.response_file.c_str()).c_str());
+
+	if (action.inputs.size() == 0)
+	{
+		assert(0 != action.get_oldest_output_timestamp() && "No inputs and the output does not exist");
+		// We are now a dummy action that only exists to gather preexisting objects for linking.
+		return 0;
+	}
+
+	assert(action.outputs.size() == 1);
+	auto i = action.inputs[0];
+	assert(i->outputs.size() == 1);
+	assert(i->type == (action::action_type)cpp_action::source);
+	
+	// FIXME: Find a more appropriate place for this mkdir.
+	cbl::fs::mkdir(cbl::path::get_directory(action.outputs[0].c_str()).c_str(), true);
+
+	return internal_exec_cpp_action(
+		context.tc.schedule_compiler(context, as_cpp_action.response_file.c_str()),
+		action
+	);
+}
+
+static bool cull_test_source(build_context& context, cull_context &ictx, action& action)
+{
+	cbl::parallel_for([&](uint32_t i)
+		{
+			uint64_t start = cbl::time::now();
+			auto& input = action.inputs[i];
+			assert(input->type == cpp_action::include && !!"Source actions may only have includes as input");
+			cull_input(ictx, action, input);
+		},
+		action.inputs.size(), 100);
+	prune_inputs(action.inputs);
+	action.output_timestamps[0] = ictx.self_timestamp;
+	// Final decision is made by the compile action.
+	return false;
+}
+
+static bool cull_test_include(build_context& context, cull_context &ictx, action& action)
+{
+	assert(!"We ought to be culled by the parent");
+	return false;
+}
+
+struct action_handlers
+{
+	action_cull_test_handler cull;
+	action_execute_handler exec;
+};
+static std::vector<action_handlers> g_action_handlers =
+{
+	action_handlers{ cull_test_link, exec_link },
+	action_handlers{ cull_test_compile, exec_compile },
+	action_handlers{ cull_test_source, nullptr },
+	action_handlers{ cull_test_include, nullptr }
+};
+
+using task_set_ptr = std::shared_ptr<enki::ITaskSet>;
+
+task_set_ptr enqueue_build_tasks(build_context& ctx, std::shared_ptr<graph::action> root);
+
+class action_exec_task : public enki::ITaskSet
+{
+protected:
+	build_context ctx;
+	std::shared_ptr<graph::action> action;
+public:
+	cbl::deferred_process process;
+	int exit_code = -1;
+
+	action_exec_task(build_context &context, std::shared_ptr<graph::action> action_)
+		: enki::ITaskSet(1, 1)
+		, ctx(context)
+		, action(action_)
+	{}
+			
+	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
+	{
+		assert((action->inputs.size() > 0 || nullptr != g_action_handlers[action->type].exec) && "Nothing to do for this action");
+		assert(range.end - range.start == 1 && "Cannot handle ranges yet");
+
+		std::string outputs = cbl::jsonify(cbl::join(action->outputs, " "));
+
+		exit_code = dispatch_subtasks_and_wait(outputs.c_str());
+		if (exit_code == 0)
+		{
+			cbl::info("%s", ("Building " + outputs).c_str());
+			MTR_SCOPE_FUNC_S("outputs", outputs.c_str());
+
+			exit_code = g_action_handlers[action->type].exec(ctx, *action);
+			if (exit_code != 0 && g_options.fatal_errors.val.as_bool)
+				cbl::fatal(exit_code, "Building %s failed with code %d", outputs.c_str(), exit_code);
+		}
+	}
+
+protected:
+	int dispatch_subtasks_and_wait(const char *outputs)
+	{
+		MTR_SCOPE_FUNC_S("dependents", outputs);
+		// FIXME: Creating a ton of task sets is excessive, we should create one task set and feed it arrays instead.
+		std::vector<task_set_ptr> subtasks;
+		subtasks.reserve(action->inputs.size());
+		for (auto i : action->inputs)
+		{
+			if (auto subtask = enqueue_build_tasks(ctx, i))
+				subtasks.push_back(subtask);
+		}
+		// Issue the subtasks.
+		for (auto& t : subtasks)
+			cbl::scheduler.AddTaskSetToPipe(t.get());
+		// Wait for them to complete.
+		int dep_exit_code = 0;
+		for (auto& t : subtasks)
+		{
+			cbl::scheduler.WaitforTask(t.get());
+			// Propagate the first non-success exit code.
+			if (dep_exit_code == 0)
+				dep_exit_code = std::static_pointer_cast<action_exec_task>(t)->exit_code;
+		}
+		return dep_exit_code;
+	}
+};
+
+static void cull_action_legacy(build_context &bctx, std::shared_ptr<graph::action>& action, uint64_t root_timestamp)
 {
 	using namespace graph;
 
@@ -141,7 +363,7 @@ static void cull_action(build_context &bctx, std::shared_ptr<graph::action>& act
 	static_assert(sizeof(types) / sizeof(types[0]) == action::cpp_actions_end, "Missing string for action type");
 	MTR_SCOPE(__FILE__, action->type <= cpp_action::include ? types[action->type] : "Cull: action");
 			
-	input_cull_context ictx{ action.get(), action->get_oldest_output_timestamp(), root_timestamp };
+	cull_context ictx{ action->get_oldest_output_timestamp(), root_timestamp };
 
 	switch (action->type)
 	{
@@ -156,7 +378,7 @@ static void cull_action(build_context &bctx, std::shared_ptr<graph::action>& act
 			switch (input->type)
 			{
 			case cpp_action::include:
-				cull_input(ictx, input);
+				cull_input(ictx, *action, input);
 			break;
 			case cpp_action::source:
 				assert(!"Source actions may only have includes as input");
@@ -194,8 +416,8 @@ static void cull_action(build_context &bctx, std::shared_ptr<graph::action>& act
 			{
 				uint64_t start = cbl::time::now();
 				auto& input = action->inputs[i];
-				cull_action(bctx, input, root_timestamp);
-				cull_input(ictx, input, ~0u);
+				cull_action_legacy(bctx, input, root_timestamp);
+				cull_input(ictx, *action, input, ~0u);
 			},
 				action->inputs.size(), 1);
 			prune_inputs(action->inputs);
@@ -245,9 +467,26 @@ static void cull_action(build_context &bctx, std::shared_ptr<graph::action>& act
 	}
 }
 
-using task_set_ptr = std::shared_ptr<enki::ITaskSet>;
+static void cull_action(build_context& bctx, std::shared_ptr<graph::action>& action, uint64_t root_timestamp)
+{
+	static const char* types[] =
+	{
+		"Cull: link",
+		"Cull: compile",
+		"Cull: source",
+		"Cull: include"
+	};
+	static_assert(sizeof(types) / sizeof(types[0]) == action::cpp_actions_end, "Missing string for action type");
+	MTR_SCOPE_S(__FILE__,
+		action->type <= cpp_action::include ? types[action->type] : "Cull: action",
+		"outputs[0]",
+		cbl::jsonify(action->outputs[0].c_str()).c_str());
+	cull_context ictx{ action->get_oldest_output_timestamp(), root_timestamp };
+	if (g_action_handlers[action->type].cull && g_action_handlers[action->type].cull(bctx, ictx, *action))
+		action = nullptr;
+}
 
-task_set_ptr enqueue_build_tasks(build_context &ctx, std::shared_ptr<graph::action> root);
+task_set_ptr enqueue_build_tasks_legacy(build_context &ctx, std::shared_ptr<graph::action> root);
 
 class build_task : public enki::ITaskSet
 {
@@ -270,9 +509,7 @@ public:
 	{
 		if (process)
 		{
-			std::string outputs = cbl::join(root->outputs, " ");
-			// Avoid JSON escape sequence issues.
-			for (auto& c : outputs) { if (c == '\\') c = '/'; }
+			std::string outputs = cbl::jsonify(cbl::join(root->outputs, " "));
 			cbl::info("%s", ("Building " + outputs).c_str());
 			MTR_SCOPE_S(__FILE__, "Build task", "outputs", outputs.c_str());
 			auto spawned = process();
@@ -297,7 +534,7 @@ protected:
 		subtasks.reserve(root->inputs.size());
 		for (auto i : root->inputs)
 		{
-			if (auto subtask = enqueue_build_tasks(ctx, i))
+			if (auto subtask = enqueue_build_tasks_legacy(ctx, i))
 				subtasks.push_back(subtask);
 		}
 		// Issue the subtasks.
@@ -388,7 +625,7 @@ public:
 	}
 };
 
-task_set_ptr enqueue_build_tasks(build_context &ctx, std::shared_ptr<graph::action> root)
+task_set_ptr enqueue_build_tasks_legacy(build_context &ctx, std::shared_ptr<graph::action> root)
 {
 	MTR_SCOPE_FUNC();
 	if (!root)
@@ -414,6 +651,16 @@ task_set_ptr enqueue_build_tasks(build_context &ctx, std::shared_ptr<graph::acti
 		break;
 	}
 	return nullptr;
+}
+
+task_set_ptr enqueue_build_tasks(build_context& ctx, std::shared_ptr<graph::action> root)
+{
+	MTR_SCOPE_FUNC();
+	if (!root)	// Empty graph, nothing to build.
+		return nullptr;
+	if (nullptr == g_action_handlers[root->type].exec)
+		return nullptr;
+	return std::make_shared<action_exec_task>(ctx, root);
 }
 
 union magic
@@ -572,6 +819,52 @@ static void for_each_cache(std::function<void(const cache_map_key &, timestamp_c
 	}
 }
 
+static void dump_action(std::ostringstream& dump, std::shared_ptr<graph::action> action, size_t indent)
+{
+	constexpr char tab = ' ';//'\t';
+	std::string tabs;
+	for (size_t i = 0; i < indent; ++i)
+	{
+		tabs += tab;
+	}
+
+	if (!action)
+	{
+		dump << tabs << "Empty graph (up to date)";
+		return;
+	}
+
+	const char* types[] =
+	{
+		"Link",
+		"Compile",
+		"Source",
+		"Include",
+	};
+	static_assert(sizeof(types) / sizeof(types[0]) == graph::action::custom_actions_begin - 1, "Missing string for action type");
+	dump << tabs << types[action->type] << '\n';
+	dump << tabs << "{\n";
+	tabs += tab;
+	if (!action->outputs.empty())
+	{
+		dump << tabs << "Outputs:\n";
+		dump << tabs << "{\n";
+		for (const auto& s : action->outputs)
+			dump << tabs << tab << s << '\n';
+		dump << tabs << "}\n";
+	}
+	if (!action->inputs.empty())
+	{
+		dump << tabs << "Inputs:\n";
+		dump << tabs << "{\n";
+		for (const auto& i : action->inputs)
+			dump_action(dump, i, indent + 2);
+		dump << tabs << "}\n";
+	}
+	tabs.pop_back();
+	dump << tabs << "}\n";
+}
+
 namespace graph
 {
 	std::shared_ptr<graph::action> generate_cpp_build_graph(build_context &ctx)
@@ -579,24 +872,62 @@ namespace graph
 		MTR_SCOPE_FUNC();
 		// Presize the array for safe parallel writes to it.
 		decltype(action::inputs) objects;
-		auto sources = ctx.trg.second.sources();
+		auto sources = ctx.trg.second.enumerate_sources();
 		objects.resize(sources.size());
 		cbl::parallel_for([&](uint32_t i)
 			{
-				std::string safe_source = sources[i];
-				for (auto& c : safe_source) { if (c == '\\') c = '/'; }
+				std::string safe_source = cbl::jsonify(sources[i].c_str());
 				MTR_SCOPE_S(__FILE__, "Generating compile action", "source", safe_source.c_str());
 				objects[i] = ctx.tc.generate_compile_action_for_cpptu(ctx, sources[i].c_str());
 			},
 			sources.size());
 		return ctx.tc.generate_link_action_for_objects(ctx, objects);
 	}
+
+	std::shared_ptr<graph::action> clone_build_graph(std::shared_ptr<graph::action> source)
+	{
+		MTR_SCOPE_FUNC();
+		if (!source)
+			return nullptr;
+		return source->clone();
+	}
+	
+	bool test_graphs_equivalent(std::shared_ptr<graph::action> a, std::shared_ptr<graph::action> b)
+	{
+		MTR_SCOPE_FUNC();
+		if (!a != !b)
+			return false;
+		else if (!a)	// The above implies !b.
+			return true;
+		else
+			return (*a) == (*b);
+	}
 	
 	void cull_build_graph(build_context &ctx,
 		std::shared_ptr<graph::action>& root)
 	{
 		MTR_SCOPE_FUNC();
+		auto copy = clone_build_graph(root);
 		cull_action(ctx, root, root->get_oldest_output_timestamp());
+
+		{
+			MTR_SCOPE(__FILE__, "Validation");
+			// Validation, to ensure the new code still works like the old.
+			cull_action_legacy(ctx, copy, copy->get_oldest_output_timestamp());
+			if (!test_graphs_equivalent(root, copy))
+			{
+				std::ostringstream dump;
+				dump_action(dump, copy, 0);
+				cbl::info("Culled by legacy code:\n%s", dump.str().c_str());
+
+				dump.str("");
+				dump.clear();
+				dump_action(dump, root, 0);
+				cbl::info("Culled by new code:\n%s", dump.str().c_str());
+
+				cbl::fatal((int)error_code::unknown_cppbuild_error, "Divergence in culling results");
+			}
+		}
 	}
 
 	int execute_build_graph(build_context &ctx,
@@ -604,12 +935,21 @@ namespace graph
 	{
 		MTR_SCOPE_FUNC();
 		int exit_code = 0;
-		if (auto root_task = enqueue_build_tasks(ctx, root))
+#if 0
+		if (auto root_task = enqueue_build_tasks_legacy(ctx, root))
 		{
 			cbl::scheduler.AddTaskSetToPipe(root_task.get());
 			cbl::scheduler.WaitforTask(root_task.get());
 			exit_code = std::static_pointer_cast<build_task>(root_task)->exit_code;
 		}
+#else
+		if (auto root_task = enqueue_build_tasks(ctx, root))
+		{
+			cbl::scheduler.AddTaskSetToPipe(root_task.get());
+			cbl::scheduler.WaitforTask(root_task.get());
+			exit_code = std::static_pointer_cast<action_exec_task>(root_task)->exit_code;
+		}
+#endif
 		return exit_code;
 	}
 
@@ -635,7 +975,48 @@ namespace graph
 		}
 	}
 
-	void action::update_output_timestamps()
+	void dump_build_graph(std::ostringstream& dump, std::shared_ptr<graph::action> root)
+	{
+		dump_action(dump, root, 0);
+	}
+
+	void register_action_handlers(action::action_type t,
+		action_cull_test_handler cull_test,
+		action_execute_handler exec)
+	{
+		cbl::log_debug("Registering handlers for type %d: cull_test = 0x%p, exec = 0x%p", t, cull_test, exec);
+		if (t >= g_action_handlers.size())
+		{
+			if (t - g_action_handlers.size() > 1)
+				cbl::log_debug("Growing the handler vector by more than 1, this will insert nullptr handlers for type range [%d, %d]", g_action_handlers.size(), t - 1);
+			g_action_handlers.resize(t + 1, { nullptr, nullptr });
+		}
+		g_action_handlers[t].cull = cull_test;
+		g_action_handlers[t].exec = exec;
+	}
+
+	bool operator==(const action_vector& a, const action_vector& b)
+	{
+		if (a.size() != b.size())
+			return false;
+		for (auto& i : a)
+		{
+			auto predicate = [&i](const std::shared_ptr<action> &j)
+			{
+				if (!i != !j)
+					return false;
+				else if (!i)	// The above implies !j.
+					return true;
+				else
+					return (*i) == (*j);
+			};
+			if (b.end() == std::find_if(b.begin(), b.end(), predicate))
+				return false;
+		}
+		return true;
+	}
+
+	void action::update_output_timestamps() const
 	{
 		output_timestamps.clear();
 		output_timestamps.reserve(outputs.size());
@@ -645,7 +1026,7 @@ namespace graph
 		}
 	}
 
-	uint64_t action::get_oldest_output_timestamp()
+	uint64_t action::get_oldest_output_timestamp() const
 	{
 		if (output_timestamps.empty())
 		{
@@ -653,6 +1034,31 @@ namespace graph
 		}
 		auto it = std::min_element(output_timestamps.begin(), output_timestamps.end());
 		return it != output_timestamps.end() ? *it : 0;
+	}
+
+	std::shared_ptr<action> action::clone() const
+	{
+		auto result = internal_clone();
+		result->type = type;
+		result->inputs.reserve(inputs.size());
+		for (auto& input : inputs)
+		{
+			result->inputs.push_back(input->clone());
+		}
+		result->outputs.insert(result->outputs.begin(), outputs.begin(), outputs.end());
+		result->output_timestamps.insert(result->output_timestamps.begin(), output_timestamps.begin(), output_timestamps.end());
+		return result;
+	}
+
+	bool action::operator==(action& other) const
+	{
+		if (other.type != type)
+			return false;
+		if (other.inputs != inputs)
+			return false;
+		if (other.outputs != outputs)
+			return false;
+		return internal_is_equivalent(other);
 	}
 
 	bool cpp_action::are_dependencies_met()
@@ -680,6 +1086,18 @@ namespace graph
 
 			return outputs > newest_input;
 		}
+	}
+
+	std::shared_ptr<action> cpp_action::internal_clone() const
+	{
+		auto result = std::make_shared<cpp_action>();
+		result->response_file = response_file;
+		return result;
+	}
+
+	bool cpp_action::internal_is_equivalent(action &other) const
+	{
+		return static_cast<cpp_action&>(other).response_file == response_file;
 	}
 
 	void save_timestamp_caches()

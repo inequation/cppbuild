@@ -253,6 +253,28 @@ namespace cbl
 		}
 	}
 
+	std::string& jsonify(std::string& s)
+	{
+		for (auto& c : s) { if (c == '\\') c = '/'; }
+		return s;
+	}
+
+	std::string jsonify(const std::string& s)
+	{
+		return jsonify(std::string(s));
+	}
+
+	std::string&& jsonify(std::string&& s)
+	{
+		for (auto& c : s) { if (c == '\\') c = '/'; }
+		return std::move(s);
+	}
+
+	std::string jsonify(char *s)
+	{
+		return jsonify(std::string(s));
+	}
+
 	std::string join(const string_vector& v, const char *glue)
 	{
 		std::string result;
@@ -316,6 +338,59 @@ namespace cbl
 #endif
 			;
 
+		void internal_log(severity severity, const char *buffer)
+		{
+			std::ostringstream thread_id;
+			thread_id << std::this_thread::get_id();
+
+			FILE *output_stream = nullptr;
+			switch (severity)
+			{
+			case severity::warning:
+			case severity::error:
+				output_stream = stderr;
+				break;
+			default:
+				output_stream = stdout;
+				break;
+			}
+			static constexpr const char *severity_tags[] =
+			{
+				"[Debug]",
+				"[Verbose]",
+				"[Info]",
+				"[Warning]",
+				"[Error]"
+			};
+			int h, m, s, us;
+			time::of_day(time::now(), nullptr, nullptr, nullptr, &h, &m, &s, &us);
+
+			{
+				// This is the only part that can't happen in parallel.
+				static std::mutex mutex;
+				std::lock_guard<std::mutex> _(mutex);
+
+				auto emit = [&](FILE *stream)
+				{
+					fprintf(stream, "[%02d:%02d:%02d.%03d][Thread %s]%s ", h, m, s, us / 1000,
+						thread_id.str().c_str(), severity_tags[(int)severity]);
+					fputs(buffer, stream);
+					fputc('\n', stream);
+				};
+				emit(output_stream);
+				if (log_file_stream)
+				{
+					emit(log_file_stream);
+				}
+#if defined(_WIN64)
+				// This doesn't decorate the output with timestamp and thread ID, but it's good enough for debug.
+				OutputDebugStringA(severity_tags[(int)severity]);
+				OutputDebugStringA(buffer);
+				OutputDebugStringA("\n");
+#endif
+			}
+		}
+
 		// Logging implementation. Thread safe at the cost of a mutex lock around the actual buffer emission.
 		template<severity severity>
 		void log(const char *fmt, va_list va)
@@ -323,9 +398,6 @@ namespace cbl
 			cbl::severity runtime_log_level = static_cast<cbl::severity>(g_options.log_level.val.as_int32);
 			if (compiled_log_level <= severity && runtime_log_level <= severity)
 			{
-				std::ostringstream thread_id;
-				thread_id << std::this_thread::get_id();
-
 #if defined(_GNU_SOURCE)
 				char *buffer = nullptr;
 				vasprintf(&buffer, fmt, va);
@@ -342,46 +414,7 @@ namespace cbl
 				vsnprintf(buffer, required, fmt, va);
 				buffer[required - 1] = 0;
 #endif
-				FILE *output_stream = nullptr;
-				switch (severity)
-				{
-				case severity::warning:
-				case severity::error:
-					output_stream = stderr;
-					break;
-				default:
-					output_stream = stdout;
-					break;
-				}
-				static constexpr const char *severity_tags[] =
-				{
-					"[Debug]",
-					"[Verbose]",
-					"[Info]",
-					"[Warning]",
-					"[Error]"
-				};
-				int h, m, s, us;
-				time::of_day(time::now(), nullptr, nullptr, nullptr, &h, &m, &s, &us);
-
-				{
-					// This is the only part that can't happen in parallel.
-					static std::mutex mutex;
-					std::lock_guard<std::mutex> _(mutex);
-
-					auto emit = [&](FILE *stream)
-					{
-						fprintf(stream, "[%02d:%02d:%02d.%03d][Thread %s]%s ", h, m, s, us / 1000,
-							thread_id.str().c_str(), severity_tags[(int)severity]);
-						fputs(buffer, stream);
-						fputc('\n', stream);
-					};
-					emit(output_stream);
-					if (log_file_stream)
-					{
-						emit(log_file_stream);
-					}
-				}
+				internal_log(severity, buffer);
 #if defined(_GNU_SOURCE)
 				if (buffer)
 					free(buffer);
