@@ -80,7 +80,7 @@ std::string version::to_string() const
 
 #define CPPBUILD_STRINGIFY(x)	CPPBUILD_STRINGIFY2(x)
 #define CPPBUILD_STRINGIFY2(x)	#x
-const version cppbuild_version = { 0, 0, 0, 0,
+const version cppbuild_version = { 0, 1, 0, 0,
 #if CPPBUILD_GENERATION
 	"gen" CPPBUILD_STRINGIFY(CPPBUILD_GENERATION)
 #else
