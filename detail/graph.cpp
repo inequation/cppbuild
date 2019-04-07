@@ -596,7 +596,10 @@ namespace graph
 				objects[i] = ctx.tc.generate_compile_action_for_cpptu(ctx, sources[i].c_str());
 			},
 			sources.size());
-		return ctx.tc.generate_link_action_for_objects(ctx, objects);
+		auto root = ctx.tc.generate_link_action_for_objects(ctx, objects);
+		if (ctx.trg.second.generate_graph_hook)
+			ctx.trg.second.generate_graph_hook(root);
+		return root;
 	}
 
 	std::shared_ptr<graph::action> clone_build_graph(std::shared_ptr<graph::action> source)
@@ -623,6 +626,8 @@ namespace graph
 	{
 		MTR_SCOPE_FUNC();
 		cull_action(ctx, root, root->get_oldest_output_timestamp());
+		if (ctx.trg.second.cull_graph_hook && ctx.trg.second.cull_graph_hook(root))
+			cull_build_graph(ctx, root);
 	}
 
 	int execute_build_graph(build_context &ctx,

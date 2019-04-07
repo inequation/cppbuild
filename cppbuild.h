@@ -105,7 +105,8 @@ namespace graph
 {
 	struct action;
 	struct cpp_action;
-	using action_vector = std::vector<std::shared_ptr<action>>;
+	using action_ptr = std::shared_ptr<action>;
+	using action_vector = std::vector<action_ptr>;
 	bool operator==(const action_vector &a, const action_vector &b);
 	inline bool operator!=(const action_vector &a, const action_vector &b) { return !operator==(a, b); }
 };
@@ -125,17 +126,18 @@ struct target_data
 		dynamic_library
 	} type;
 
-	// Required: name of the target output. Unless `custom_extension` is specified, cppbuild will append platform-default extension.
+	/// Required: name of the target output. Unless `custom_extension` is specified, cppbuild will append platform-default extension.
 	std::string output;
-	// Required: callback for enumerating source files.
+	/// Required: callback for enumerating source files.
 	std::function<string_vector()> enumerate_sources;
 
-	// Optional: override toolchain selection. Otherwise, cppbuild chooses the default for the configuration's platform.
+	/// Optional: override toolchain selection. Otherwise, cppbuild chooses the default for the configuration's platform.
 	const char *used_toolchain = nullptr;
-	// Optional: provide a callback to manipulate the build graph after enumerating source files, but before culling.
-	std::function<void(std::shared_ptr<graph::action> root)> generate_graph_hook;
-	// Optional: provide a callback to manipulate the build graph after culling. Return true to invoke another pass of cpppbuild culling, false otherwise.
-	std::function<bool(std::shared_ptr<graph::action> root)> cull_graph_hook;
+	/// Optional: provide a callback to manipulate the build graph after enumerating source files, but before culling.
+	std::function<void(graph::action_ptr root)> generate_graph_hook;
+	/// Optional: provide a callback to manipulate the build graph after culling. Return true to invoke another pass of cpppbuild culling, false otherwise.
+	/// Beware of recursion. You probably want to return false, unless your hook has caused other nodes to become cullable.
+	std::function<bool(graph::action_ptr root)> cull_graph_hook;
 };
 typedef std::unordered_map<std::string, target_data> target_map;
 typedef std::pair<std::string, target_data> target;
