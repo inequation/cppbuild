@@ -349,124 +349,6 @@ protected:
 	}
 };
 
-static void cull_action_legacy(build_context &bctx, std::shared_ptr<graph::action>& action, uint64_t root_timestamp)
-{
-	using namespace graph;
-
-	static const char *types[] =
-	{
-		"Cull: link",
-		"Cull: compile",
-		"Cull: source",
-		"Cull: include"
-	};
-	static_assert(sizeof(types) / sizeof(types[0]) == action::cpp_actions_end, "Missing string for action type");
-	MTR_SCOPE(__FILE__, action->type <= cpp_action::include ? types[action->type] : "Cull: action");
-			
-	cull_context ictx{ action->get_oldest_output_timestamp(), root_timestamp };
-
-	switch (action->type)
-	{
-	case cpp_action::include:
-		assert(!"We ought to be culled by the parent");
-		return;
-	case cpp_action::source:
-		cbl::parallel_for([&](uint32_t i)
-		{
-			uint64_t start = cbl::time::now();
-			auto& input = action->inputs[i];
-			switch (input->type)
-			{
-			case cpp_action::include:
-				cull_input(ictx, *action, input);
-			break;
-			case cpp_action::source:
-				assert(!"Source actions may only have includes as input");
-				break;
-			default:
-				assert(!"Unimplmented");
-				abort();
-			}
-		},
-			action->inputs.size(), 100);
-		prune_inputs(action->inputs);
-		action->output_timestamps[0] = ictx.self_timestamp;
-		break;
-	case cpp_action::compile:
-	case cpp_action::link:
-	{
-		const auto rf_path = static_cast<cpp_action *>(action.get())->response_file.c_str();
-		const auto rf_timestamp = cbl::fs::get_modification_timestamp(rf_path);
-		if (ictx.self_timestamp < rf_timestamp)
-		{
-			// Response file is newer, which means that compilation flags have changed.
-			cbl::log_debug("Response file newer than product for ACTION type %d %s (%d inputs remaining; self=%" PRIu64 ", rf=%" PRIu64 ")", action->type, action->outputs[0].c_str(), action->inputs.size(), ictx.self_timestamp.load(), rf_timestamp);
-			ictx.self_timestamp = rf_timestamp;
-		}
-		else
-		{
-			decltype(action->inputs) backup_inputs;
-			const bool is_linking = action->type == cpp_action::link;
-			if (is_linking)
-			{
-				// For linking, if any input remains at all, we need to link all of them.
-				backup_inputs.insert(backup_inputs.begin(), action->inputs.begin(), action->inputs.end());
-			}
-			cbl::parallel_for([&](uint32_t i)
-			{
-				uint64_t start = cbl::time::now();
-				auto& input = action->inputs[i];
-				cull_action_legacy(bctx, input, root_timestamp);
-				cull_input(ictx, *action, input, ~0u);
-			},
-				action->inputs.size(), 1);
-			prune_inputs(action->inputs);
-
-			if (is_linking && !action->inputs.empty() && action->inputs.size() < backup_inputs.size())
-			{
-				for (auto &bi : backup_inputs)
-				{
-					auto predicate = [&bi](const std::shared_ptr<graph::action> &in)
-					{
-						if (in->outputs.size() == bi->outputs.size())
-						{
-							for (size_t i = 0; i < in->outputs.size(); ++i)
-							{
-								// We can test for identity because the backup is a clone.
-								if (in->outputs[i] != bi->outputs[i])
-									return false;
-							}
-							return true;
-						}
-						return false;
-					};
-					if (action->inputs.end() == std::find_if(action->inputs.begin(), action->inputs.end(), predicate))
-					{
-						// We don't need to build the object, but we need to consume it.
-						bi->inputs.clear();
-						action->inputs.push_back(bi);
-					}
-				}
-			}
-		}
-
-		if (action->inputs.empty() && root_timestamp != 0)
-		{
-			cbl::log_debug("Culling ACTION type %d %s (%d inputs remaining)", action->type, action->outputs[0].c_str(), action->inputs.size());
-			action = nullptr;
-		}
-		else
-		{
-			action->output_timestamps[0] = ictx.self_timestamp;
-		}
-		break;
-	}
-	default:
-		assert(!"Unimplmented");
-		abort();
-	}
-}
-
 static void cull_action(build_context& bctx, std::shared_ptr<graph::action>& action, uint64_t root_timestamp)
 {
 	static const char* types[] =
@@ -484,173 +366,6 @@ static void cull_action(build_context& bctx, std::shared_ptr<graph::action>& act
 	cull_context ictx{ action->get_oldest_output_timestamp(), root_timestamp };
 	if (g_action_handlers[action->type].cull && g_action_handlers[action->type].cull(bctx, ictx, *action))
 		action = nullptr;
-}
-
-task_set_ptr enqueue_build_tasks_legacy(build_context &ctx, std::shared_ptr<graph::action> root);
-
-class build_task : public enki::ITaskSet
-{
-protected:
-	build_context ctx;
-	std::shared_ptr<graph::action> root;
-public:
-	cbl::deferred_process process;
-	int exit_code = -1;
-
-	build_task(build_context &context, std::shared_ptr<graph::action> root_action, cbl::deferred_process work = nullptr,
-		uint32_t set_size = 1, uint32_t min_size_for_splitting_to_threads = 1)
-		: enki::ITaskSet(set_size, min_size_for_splitting_to_threads)
-		, ctx(context)
-		, root(root_action)
-		, process(work)
-	{}
-			
-	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-	{
-		if (process)
-		{
-			std::string outputs = cbl::jsonify(cbl::join(root->outputs, " "));
-			cbl::info("%s", ("Building " + outputs).c_str());
-			MTR_SCOPE_S(__FILE__, "Build task", "outputs", outputs.c_str());
-			auto spawned = process();
-			if (spawned)
-			{
-				exit_code = spawned->wait();
-				if (exit_code != 0 && g_options.fatal_errors.val.as_bool)
-					cbl::fatal(exit_code, "Building %s failed with code %d", outputs.c_str(), exit_code);
-			}
-		}
-	}
-};
-
-class build_task_with_deps : public build_task
-{
-protected:
-	void dispatch_subtasks_and_wait()
-	{
-		MTR_SCOPE_FUNC();
-		// FIXME: Creating a ton of task sets is excessive, we should create one task set and feed it arrays instead.
-		std::vector<std::shared_ptr<enki::ITaskSet>> subtasks;
-		subtasks.reserve(root->inputs.size());
-		for (auto i : root->inputs)
-		{
-			if (auto subtask = enqueue_build_tasks_legacy(ctx, i))
-				subtasks.push_back(subtask);
-		}
-		// Issue the subtasks.
-		for (auto& t : subtasks)
-			cbl::scheduler.AddTaskSetToPipe(t.get());
-		// Wait for them to complete.
-		int dep_exit_code = 0;
-		for (auto& t : subtasks)
-		{
-			cbl::scheduler.WaitforTask(t.get());
-			// Propagate the first non-success exit code.
-			if (dep_exit_code == 0)
-				dep_exit_code = std::static_pointer_cast<build_task_with_deps>(t)->exit_code;
-		}
-		exit_code = dep_exit_code;
-	}
-
-public:
-	build_task_with_deps(build_context &context, std::shared_ptr<graph::action> root_action, cbl::deferred_process work = nullptr)
-		: build_task(context, root_action, work, 1)
-	{}
-
-	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-	{
-		dispatch_subtasks_and_wait();
-		if (exit_code == 0)
-			// Dependencies ran correctly, run our own stuff.
-			build_task::ExecuteRange(range, threadnum);
-	}
-};
-
-class compile_task : public build_task
-{
-public:
-	compile_task(build_context& context, std::shared_ptr<graph::cpp_action> root)
-		: build_task(context, root, context.tc.schedule_compiler(context, root->response_file.c_str()))
-	{}
-
-	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-	{
-		MTR_SCOPE(__FILE__, "Compile");
-
-		assert(root->outputs.size() == 1);
-		assert(root->inputs.size() == 1);
-		auto i = root->inputs[0];
-		assert(i->outputs.size() == 1);
-		assert(i->type == (action::action_type)cpp_action::source);
-
-		// FIXME: Find a more appropriate place for this mkdir.
-		cbl::fs::mkdir(cbl::path::get_directory(root->outputs[0].c_str()).c_str(), true);
-				
-		build_task::ExecuteRange(range, threadnum);
-	}
-};
-
-class link_task : public build_task_with_deps
-{
-public:
-	link_task(build_context &context, std::shared_ptr<graph::cpp_action> root)
-		: build_task_with_deps(context, root)
-	{
-		string_vector inputs;
-		for (auto i : root->inputs)
-		{
-			assert(i->type == (action::action_type)cpp_action::compile);
-			inputs.insert(inputs.begin(), i->outputs.begin(), i->outputs.end());
-		}
-		process = context.tc.schedule_linker(context, root->response_file.c_str());
-	}
-
-	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-	{
-		MTR_SCOPE(__FILE__, "Link");
-		build_task_with_deps::ExecuteRange(range, threadnum);
-	}
-};
-
-class generate_task : public build_task_with_deps
-{
-public:
-	using build_task_with_deps::build_task_with_deps;
-
-	void ExecuteRange(enki::TaskSetPartition range, uint32_t threadnum) override
-	{
-		// Only run subtasks.
-		// TODO: Revise this if we ever need to actually spawn a process here.
-		dispatch_subtasks_and_wait();
-	}
-};
-
-task_set_ptr enqueue_build_tasks_legacy(build_context &ctx, std::shared_ptr<graph::action> root)
-{
-	MTR_SCOPE_FUNC();
-	if (!root)
-	{
-		// Empty graph, nothing to build.
-		return 0;
-	}
-	if (root->inputs.empty())
-	{
-		// This action is built and is probably a dependency up the tree.
-		return 0;
-	}
-	switch (root->type)
-	{
-	case cpp_action::link:
-		assert(root->type == graph::cpp_action::link);
-		return std::make_shared<link_task>(ctx, std::static_pointer_cast<graph::cpp_action>(root));
-	case cpp_action::compile:
-		assert(root->type == graph::cpp_action::compile);
-		return std::make_shared<compile_task>(ctx, std::static_pointer_cast<graph::cpp_action>(root));
-	default:
-		assert(!"Unimplmented");
-		break;
-	}
-	return nullptr;
 }
 
 task_set_ptr enqueue_build_tasks(build_context& ctx, std::shared_ptr<graph::action> root)
@@ -907,27 +622,7 @@ namespace graph
 		std::shared_ptr<graph::action>& root)
 	{
 		MTR_SCOPE_FUNC();
-		auto copy = clone_build_graph(root);
 		cull_action(ctx, root, root->get_oldest_output_timestamp());
-
-		{
-			MTR_SCOPE(__FILE__, "Validation");
-			// Validation, to ensure the new code still works like the old.
-			cull_action_legacy(ctx, copy, copy->get_oldest_output_timestamp());
-			if (!test_graphs_equivalent(root, copy))
-			{
-				std::ostringstream dump;
-				dump_action(dump, copy, 0);
-				cbl::info("Culled by legacy code:\n%s", dump.str().c_str());
-
-				dump.str("");
-				dump.clear();
-				dump_action(dump, root, 0);
-				cbl::info("Culled by new code:\n%s", dump.str().c_str());
-
-				cbl::fatal((int)error_code::unknown_cppbuild_error, "Divergence in culling results");
-			}
-		}
 	}
 
 	int execute_build_graph(build_context &ctx,
@@ -935,21 +630,12 @@ namespace graph
 	{
 		MTR_SCOPE_FUNC();
 		int exit_code = 0;
-#if 0
-		if (auto root_task = enqueue_build_tasks_legacy(ctx, root))
-		{
-			cbl::scheduler.AddTaskSetToPipe(root_task.get());
-			cbl::scheduler.WaitforTask(root_task.get());
-			exit_code = std::static_pointer_cast<build_task>(root_task)->exit_code;
-		}
-#else
 		if (auto root_task = enqueue_build_tasks(ctx, root))
 		{
 			cbl::scheduler.AddTaskSetToPipe(root_task.get());
 			cbl::scheduler.WaitforTask(root_task.get());
 			exit_code = std::static_pointer_cast<action_exec_task>(root_task)->exit_code;
 		}
-#endif
 		return exit_code;
 	}
 
