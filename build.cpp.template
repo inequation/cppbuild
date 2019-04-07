@@ -1,0 +1,42 @@
+// To bootstrap, run
+// * on Unices, in a shell:
+//   $ g++ -o build -pthread build.cpp && ./build
+// * on Windows, in a Visual Studio Developer Command Prompt:
+//   > cl build.cpp && build.exe
+
+// Base cppbuild include.
+#include "cppbuild/cppbuild.h"
+// cppbuild utility library.
+#include "cppbuild/cbl.h"
+
+std::pair<std::string, std::string> describe(target_map& targets, configuration_map& configs, toolchain_map& toolchains)
+{
+	// Declare a basic executable target built from all recursively found sources under `./src/...`.
+	targets["target-name"] = target_data{
+		target_data::executable,
+		"executable_name",
+		[]() { return cbl::fs::enumerate_files("src/**/*.cpp"); },
+		// Members below are optional.
+		nullptr,	// No predefined toolchain, use default.
+		[](graph::action_ptr root) { cbl::info("Post graph generation hook firing for %s", root->outputs[0].c_str()); },
+		// Return false not to run another pass of graph culling.
+		[](graph::action_ptr root) { cbl::info("Post graph culling hook firing for %s", root ? root->outputs[0].c_str() : "(culled)"); return false; }
+	}; 
+
+	// Declare basic configurations for the current platform.
+	std::string platform_str(cbl::get_host_platform_str());
+	auto debug =	configs["debug-" + platform_str] = cbl::base_configurations::debug(cbl::get_host_platform());
+	auto release =	configs["release-" + platform_str] = cbl::base_configurations::release(cbl::get_host_platform());
+
+	// Set some macro definitions.
+	debug.definitions.push_back(std::make_pair("FOO", "1"));
+	release.definitions.push_back(std::make_pair("BAR", ""));
+
+	// Example default option override (can be still overridden from the command line):
+	// - bump log verbosity level to 1 (cbl::severity::verbose),
+	// - set build graph dump verbosity level to 1 (dumps the culled graph).
+	override_options(string_vector{ "-l1", "-G1" });
+
+	// Return defaults to build if no target and/or configuration is provided on the command line.
+	return std::make_pair("target-name", "release-" + platform_str);
+}
