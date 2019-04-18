@@ -43,8 +43,10 @@ namespace cbl
 		std::string get_filename(const char *path);
 		std::string get_basename(const char *path);
 		std::string get_absolute(const char *path);
-		// If to is nullptr, current working directory is used.
+		/// If `to` is nullptr, current working directory is used.
 		std::string get_relative_to(const char *path, const char *to = nullptr);
+		/// Replaces all slashes, forward and backward, with the current platform's path separator.
+		std::string get_normalised(const char *path);
 
 		// Splits a path along path separators.
 		string_vector split(const char *path);
@@ -83,6 +85,22 @@ namespace cbl
 		bool delete_file(const char *path);
 
 		void disinherit_stream(FILE *stream);
+
+		enum class cache_update_result : uint8_t
+		{
+			/// Existing file was outdated and we failed to rewrite it.
+			outdated_failure = 0,
+			/// Existing file was outdated and we successfully rewrote it.
+			outdated_success,
+			/// Existing file was up-to-date and was left unmodified.
+			up_to_date
+		};
+		/// Updates a file-backed cache. Useful for compiler response files, generated code etc.
+		/// Compares the contents against the file on the file system, and:
+		/// - if they are identical to the contents of the file, no action is taken;
+		/// - if they are different, the file gets overwritten by contents.
+		/// Returns true on success, false otherwise.
+		cache_update_result update_file_backed_cache(const char *path, const void *contents, size_t bytes);
 	};
 
 	// Factories for generating typical basic configurations.

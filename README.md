@@ -38,14 +38,15 @@ I'm sorry, you've showed up a bit early! I've got an example project cooking up,
 
 However, you can already get cracking - follow these steps:
 1. Open a shell in your project's directory and `git submodule add https://github.com/inequation/cppbuild.git`.
-2. Copy `cppbuild/build.cpp.template` to your project directory and rename it to `build.cpp`. It's the functional equivalent of a makefile in *cppbuild*.
-3. Customize the `describe()` function body inside that file.
-4. Bootstrap *cppbuild* using one of the command lines:
+2. Update the submodules: `git submodule update --init --recursive`
+3. Copy `cppbuild/build.cpp.template` to your project directory and rename it to `build.cpp`. It's the functional equivalent of a makefile in *cppbuild*.
+4. Customize the `describe()` function body inside that file.
+5. Bootstrap *cppbuild* using one of the command lines:
    `$ g++ -o build -pthread build.cpp && ./build` on Unices, or
    `> cl.exe build.cpp && build.exe` on Windows, or
    `$ cppbuild/bootstrap.sh` to use the provided shell script on Unices, or
    `> cppbuild\bootstrap.bat` to use the provided batch file on Windows.
-5. Get to work on your project. Edit `build.cpp` to your heart's content. Run `build <target> [options]` to build your project. *cppbuild* will rebuild itself automatically and seamlessly as needed.
+6. Get to work on your project. Edit `build.cpp` to your heart's content. Run `build <target> [options]` to build your project. *cppbuild* will rebuild itself automatically and seamlessly as needed.
 
 # License
 

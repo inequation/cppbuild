@@ -218,8 +218,62 @@ namespace cbl
 
 			return join(a);
 		}
+
+		std::string get_normalised(const char *path)
+		{
+			std::string norm(path);
+			for (char &c : norm) { if (c == '/' || c == '\\') c = get_path_separator(); }
+			return norm;
+		}
 	};
 
+	namespace fs
+	{
+		cache_update_result update_file_backed_cache(const char *path, const void *contents, size_t byte_count)
+		{
+			// TODO: Hashing instead of memcmp().
+			using namespace cbl;
+
+			if (FILE * f = fopen(path, "rb"))
+			{
+				std::vector<uint8_t> existing_cache;
+				existing_cache.resize(byte_count);	// Hint for expected size.
+				size_t bytes = 0;
+				for (;;)
+				{
+					bytes += fread(const_cast<uint8_t *>(existing_cache.data()) + bytes, 1, existing_cache.size() - bytes, f);
+					if (feof(f) || ferror(f))
+						break;
+					existing_cache.resize(existing_cache.size() * 2);
+				}
+				// Assume outdated if there was an error.
+				bool had_error = ferror(f);
+				fclose(f);
+				if (!had_error && bytes > 0 && 0 == memcmp(existing_cache.data(), contents, bytes))
+					return cache_update_result::up_to_date;
+			}
+
+			// If we get here, the file was deemed outdated.
+			fs::mkdir(path::get_directory(path).c_str(), true);
+			if (FILE * f = fopen(path, "wb"))
+			{
+				size_t bytes = 0;
+				for (;;)
+				{
+					bytes += fwrite(static_cast<const uint8_t *>(contents) + bytes, 1, byte_count - bytes, f);
+					if (ferror(f) || bytes == byte_count)
+						break;
+				}
+				bool had_error = ferror(f);
+				fclose(f);
+				if (!had_error)
+					return cache_update_result::outdated_success;
+			}
+			cbl::warning("Failed to write file-backed cache %s, reason: %s", path, strerror(errno));
+			return cache_update_result::outdated_failure;
+		}
+	}
+	
 	std::function<string_vector()> fvwrap(const std::string& s)
 	{
 		return [s]() { return string_vector{ s }; };

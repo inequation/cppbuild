@@ -198,11 +198,11 @@ void msvc::generate_dependency_actions_for_cpptu(
 	std::string safe_source = cbl::jsonify(source);
 	MTR_SCOPE_S(__FILE__, "Dependency scan", "source", safe_source.c_str());
 	int exit_code = cbl::process::start_sync(cmdline.c_str(), append_to_buffer, [](const void *, size_t) {});
+	buffer.push_back(0);	// Ensure null termination, so that we may treat data() as C string.
 	if (exit_code == 0)
 	{
 		constexpr const char needle[] = "Note: including file: ";
 		const size_t needle_length = strlen(needle);
-		buffer.push_back(0);	// Ensure null termination, so that we may treat data() as C string.
 		const char *s = (char *)buffer.data();
 		do
 		{
@@ -530,7 +530,8 @@ std::string msvc::generate_cl_commandline_shared(
 	const bool for_linking)
 {
 	std::string cmdline = "/nologo";
-	cmdline += " /std:c++" + std::to_string(int(ctx.cfg.second.standard));
+	cmdline += " /std:c++";
+	cmdline += std::to_string(int(ctx.cfg.second.standard));
 	if (ctx.cfg.second.emit_debug_information)
 	{
 		cmdline += " /Zi";
@@ -558,16 +559,19 @@ std::string msvc::generate_cl_commandline_shared(
 	{
 		for (auto& define : ctx.cfg.second.definitions)
 		{
-			cmdline += " /D" + define.first;
+			cmdline += " /D";
+			cmdline += define.first;
 			if (!define.second.empty())
 			{
-				cmdline += "=" + define.second;
+				cmdline += "=";
+				cmdline += define.second;
 			}
 		}
 		cmdline += generate_system_include_directories();
 		for (auto& include_dir : ctx.cfg.second.additional_include_directories)
 		{
-			cmdline += " /I" + include_dir;
+			cmdline += " /I";
+			cmdline += include_dir;
 		}
 	}
 	if (ctx.trg.second.type == target_data::executable)

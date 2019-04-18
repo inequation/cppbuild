@@ -325,7 +325,7 @@ std::pair<std::string, std::string> describe(target_map& targets, configuration_
 //=============================================================================
 
 // Internal implementations
-#if CPPBUILD_GENERATION < 2
+#if CPPBUILD_GENERATION < 2 || defined(CPPBUILD_NO_INLINE_IMPLEMENTATIONS)
 	#include "detail/core.cpp"
 	#include "detail/cbl.cpp"
 	#include "detail/cbl_win64.cpp"

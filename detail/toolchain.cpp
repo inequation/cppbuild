@@ -70,46 +70,12 @@ std::string generic_cpp_toolchain::get_response_file_for_link_product(build_cont
 	return get_intermediate_path_for_cpptu(ctx, product_path, ".response");
 }
 
-static inline void internal_write_response_file(const char *path, const std::string &response)
-{
-	using namespace cbl;
-	fs::mkdir(path::get_directory(path).c_str(), true);
-	if (FILE *f = fopen(path, "wb"))
-	{
-		fwrite(response.data(), 1, response.size(), f);
-		fclose(f);
-	}
-	else
-	{
-		cbl::fatal((int)error_code::failed_writing_response_file, "Failed to write response file, reason: %s", strerror(errno));
-	}
-}
-
 void generic_cpp_toolchain::update_response_file(build_context &ctx, const char *response_file, const char *response_str)
 {
-	FILE *f = fopen(response_file, "rb");
-	size_t current_response_len = strlen(response_str);
-	
-	if (f)
-	{
-		std::string old_response;
-		old_response.resize(current_response_len);
-		size_t bytes = 0;
-		for (;;)
-		{
-			bytes += fread(const_cast<char *>(old_response.data()) + bytes, 1, old_response.size() - bytes, f);
-			if (feof(f))
-				break;
-			old_response.resize(old_response.size() * 2);
-		}
-		fclose(f);
-		old_response.push_back(0);
-		old_response.resize(strlen(old_response.c_str()));
-		if (old_response == response_str)
-			return;
-	}
-	
-	internal_write_response_file(response_file, response_str);
+	using namespace cbl::fs;
+	auto result = update_file_backed_cache(response_file, response_str, strlen(response_str));
+	if (result == cache_update_result::outdated_failure)
+		cbl::fatal((int)error_code::failed_writing_response_file, "Failed to write response file, reason: %s", strerror(errno));
 }
 
 std::shared_ptr<graph::action> generic_cpp_toolchain::generate_compile_action_for_cpptu(
